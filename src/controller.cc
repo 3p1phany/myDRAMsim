@@ -35,11 +35,18 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
     }
 
 #ifdef CMD_TRACE
-    std::string trace_file_name = config_.output_prefix + "ch_" +
+    std::string trace_file_name = config_.output_prefix + "_ch" +
                                   std::to_string(channel_id_) + "cmd.trace";
     std::cout << "Command Trace write to " << trace_file_name << std::endl;
     cmd_trace_.open(trace_file_name, std::ofstream::out);
 #endif  // CMD_TRACE
+
+#ifdef TRANS_TRACE
+    std::string trans_trace_file_name = config_.output_prefix + "_ch" +
+                                  std::to_string(channel_id_) + "trans.trace";
+    std::cout << "trans Trace write to " << trans_trace_file_name << std::endl;
+    trans_trace_.open(trans_trace_file_name, std::ofstream::out);
+#endif  // TRANS_TRACE
 }
 
 std::pair<uint64_t, int> Controller::ReturnDoneTrans(uint64_t clk) {
@@ -172,6 +179,11 @@ bool Controller::AddTransaction(Transaction trans) {
     simple_stats_.AddValue("interarrival_latency", clk_ - last_trans_clk_);
     last_trans_clk_ = clk_;
 
+#ifdef TRANS_TRACE
+    auto cmd = TransToCommand(trans);
+    trans_trace_ << std::left << std::setw(18) << clk_ << " " << cmd << std::endl;
+#endif  // TRANS_TRACE
+
     if (trans.is_write) {
         if (pending_wr_q_.count(trans.addr) == 0) {  // can not merge writes
             pending_wr_q_.insert(std::make_pair(trans.addr, trans));
@@ -205,6 +217,7 @@ bool Controller::AddTransaction(Transaction trans) {
 
 void Controller::ScheduleTransaction() {
     // determine whether to schedule read or write
+    // read/write arbiter,very simple here, we can make it more advanced and complex TODO
     if (write_draining_ == 0 && !is_unified_queue_) {
         // we basically have an upper and lower threshold for write buffer
         if ((write_buffer_.size() >= 7*write_buffer_.capacity()/8) ||

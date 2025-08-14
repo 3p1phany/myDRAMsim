@@ -67,6 +67,10 @@ if (THERMAL)
     target_compile_options(thermalreplay PRIVATE -DTHERMAL -D_LONGINT -DAdd_ ${OpenMP_C_FLAGS})
 endif (THERMAL)
 
+if (TRANS_TRACE)
+    target_compile_options(dramsim3 PRIVATE -DTRANS_TRACE)
+endif (TRANS_TRACE)
+
 if (CMD_TRACE)
     target_compile_options(dramsim3 PRIVATE -DCMD_TRACE)
 endif (CMD_TRACE)

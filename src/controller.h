@@ -73,6 +73,10 @@ class Controller {
     std::ofstream cmd_trace_;
 #endif  // CMD_TRACE
 
+#ifdef TRANS_TRACE
+    std::ofstream trans_trace_;
+#endif  // TRANS_TRACE
+
     // used to calculate inter-arrival latency
     uint64_t last_trans_clk_;
 
