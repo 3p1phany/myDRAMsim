@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.0.0)
 project(dramsim3)
 
+option(TRANS_TRACE "Enable TRANS_TRACE macro" ON)
+option(CMD_TRACE "Enable CMD_TRACE macro" ON)
+
 set(default_build_type "Release")
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "Setting build type to '${default_build_type}' as none was specified.")
@@ -66,9 +69,10 @@ if (THERMAL)
     target_link_libraries(thermalreplay dramsim3 inih)
     target_compile_options(thermalreplay PRIVATE -DTHERMAL -D_LONGINT -DAdd_ ${OpenMP_C_FLAGS})
 endif (THERMAL)
+option(USE_MYMACRO "Enable MYMACRO by default" ON)
 
 if (TRANS_TRACE)
-    target_compile_options(dramsim3 PRIVATE -DTRANS_TRACE)
+  target_compile_definitions(dramsim3 PRIVATE -DTRANS_TRACE)
 endif (TRANS_TRACE)
 
 if (CMD_TRACE)
