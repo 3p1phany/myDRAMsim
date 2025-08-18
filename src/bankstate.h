@@ -12,9 +12,11 @@ class BankState {
 
     enum class State { OPEN, CLOSED, SREF, PD, SIZE };
     Command GetReadyCommand(const Command& cmd, uint64_t clk) const;
+    Command GetReadyCommandOracle(const Command& cmd, uint64_t clk) const;
 
     // Update the state of the bank resulting after the execution of the command
     void UpdateState(const Command& cmd);
+    void UpdateStateOracleForRW(const Command& cmd);
 
     // Update the existing timing constraints for the command
     void UpdateTiming(const CommandType cmd_type, uint64_t time);

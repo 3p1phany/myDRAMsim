@@ -186,6 +186,8 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue) const {
                 continue;
             }
         } else if (cmd.IsWrite()) {
+            // will not happen in normal case
+            // if a read does not return, issuing write to the same address is absurd
             if (HasRWDependency(cmd_it, queue)) {
                 continue;
             }

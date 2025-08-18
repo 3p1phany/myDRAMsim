@@ -17,7 +17,7 @@
 
 namespace dramsim3 {
 
-enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE, SIZE };
+enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE,ORACLE, SIZE };
 
 class Controller {
    public:
@@ -47,6 +47,9 @@ class Controller {
     ChannelState channel_state_;
     CommandQueue cmd_queue_;
     Refresh refresh_;
+    // --- New: context flags for classifying PRE/ACT source ---
+    bool issuing_refresh_seq_ = false;  // true only while issuing REF/REFB sequence (incl. precharges)
+    bool issuing_sref_seq_    = false;  // true only while issuing SREF_ENTER/EXIT sequence (incl. precharges)
 
 #ifdef THERMAL
     ThermalCalculator &thermal_calc_;

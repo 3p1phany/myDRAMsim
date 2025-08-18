@@ -74,6 +74,17 @@ void ChannelState::RankNeedRefresh(int rank, bool need) {
 }
 
 Command ChannelState::GetReadyCommand(const Command& cmd, uint64_t clk) const {
+
+    if (config_.row_buf_policy == "ORACLE" && cmd.IsReadWrite()) {
+        auto& bs = bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
+        Command ready = bs.GetReadyCommandOracle(cmd, clk);
+        if (ready.IsValid()) {
+            return ready; // 只可能是 READ/WRITE
+        } else {
+            return Command(); // 还没到列/总线可发时间
+        }
+    }
+
     Command ready_cmd = Command();
     if (cmd.IsRankCMD()) {
         int num_ready = 0;
@@ -263,6 +274,12 @@ void ChannelState::UpdateSameRankTiming(
 }
 
 void ChannelState::UpdateTimingAndStates(const Command& cmd, uint64_t clk) {
+    if (config_.row_buf_policy == "ORACLE" && cmd.IsReadWrite()) {
+        bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()].UpdateStateOracleForRW(cmd);
+        UpdateTiming(cmd, clk); 
+        return;
+    }
+
     UpdateState(cmd);
     UpdateTiming(cmd, clk);
     return;

@@ -22,11 +22,13 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
       thermal_calc_(thermal_calc),
 #endif  // THERMAL
       is_unified_queue_(config.unified_queue),
-      row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE"
-                          ? RowBufPolicy::CLOSE_PAGE
-                          : RowBufPolicy::OPEN_PAGE),
+      row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
+                      config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {
+
+      issuing_refresh_seq_ = false;
+      issuing_sref_seq_ = false; 
     if (is_unified_queue_) {
         unified_queue_.reserve(config_.trans_queue_size);
     } else {
@@ -94,7 +96,12 @@ void Controller::ClockTick() {
     }
 
     if (cmd.IsValid()) {
+    // mark refresh context only for refresh-related commands
+        if (channel_state_.IsRefreshWaiting()) {
+            issuing_refresh_seq_ = true;
+        }
         IssueCommand(cmd);
+        issuing_refresh_seq_ = false;
         cmd_issued = true;
 
         if (config_.enable_hbm_dual_cmd) {
@@ -136,7 +143,9 @@ void Controller::ClockTick() {
                     auto cmd = Command(CommandType::SREF_EXIT, addr, -1);
                     cmd = channel_state_.GetReadyCommand(cmd, clk_);
                     if (cmd.IsValid()) {
+                        issuing_sref_seq_ = true;
                         IssueCommand(cmd);
+                        issuing_sref_seq_ = false;
                         break;
                     }
                 }
@@ -149,7 +158,9 @@ void Controller::ClockTick() {
                     auto cmd = Command(CommandType::SREF_ENTER, addr, -1);
                     cmd = channel_state_.GetReadyCommand(cmd, clk_);
                     if (cmd.IsValid()) {
+                        issuing_sref_seq_ = true;
                         IssueCommand(cmd);
+                        issuing_sref_seq_ = false;
                         break;
                     }
                 }
@@ -256,6 +267,33 @@ void Controller::IssueCommand(const Command &cmd) {
     // add channel in, only needed by thermal module
     thermal_calc_.UpdateCMDPower(channel_id_, cmd, clk_);
 #endif  // THERMAL
+
+    // --- Classification & invariant checks for PRE/ACT sources ---
+    if (cmd.cmd_type == CommandType::PRECHARGE) {
+        if (issuing_refresh_seq_) {
+            simple_stats_.Increment("num_pre_for_refresh");
+        } else if (issuing_sref_seq_) {
+            simple_stats_.Increment("num_pre_for_sref");
+        } else {
+            simple_stats_.Increment("num_pre_for_demand");
+        }
+    } else if (cmd.cmd_type == CommandType::ACTIVATE) {
+        if (issuing_sref_seq_) {
+            simple_stats_.Increment("num_act_for_sref");
+        } else {
+            simple_stats_.Increment("num_act_for_demand");
+        }
+    }
+
+    // Invariant (Oracle): demand path must not issue ACT/PRE
+    if (row_buf_policy_ == RowBufPolicy::ORACLE &&
+        (cmd.cmd_type == CommandType::ACTIVATE || cmd.cmd_type == CommandType::PRECHARGE) &&
+        !issuing_refresh_seq_ && !issuing_sref_seq_) {
+        std::cerr << "[ORACLE] Demand ACT/PRE issued unexpectedly at clk="
+                  << clk_ << " : " << cmd << std::endl;
+        std::abort();
+    }
+
     // if read/write, update pending queue and return queue
     if (cmd.IsRead()) {
         auto num_reads = pending_rd_q_.count(cmd.hex_addr);
@@ -294,7 +332,7 @@ void Controller::IssueCommand(const Command &cmd) {
 Command Controller::TransToCommand(const Transaction &trans) {
     auto addr = config_.AddressMapping(trans.addr);
     CommandType cmd_type;
-    if (row_buf_policy_ == RowBufPolicy::OPEN_PAGE) {
+    if (row_buf_policy_ == RowBufPolicy::OPEN_PAGE || row_buf_policy_ == RowBufPolicy::ORACLE) {
         cmd_type = trans.is_write ? CommandType::WRITE : CommandType::READ;
     } else {
         cmd_type = trans.is_write ? CommandType::WRITE_PRECHARGE

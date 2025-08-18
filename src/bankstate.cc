@@ -171,4 +171,36 @@ void BankState::UpdateTiming(CommandType cmd_type, uint64_t time) {
     return;
 }
 
+Command BankState::GetReadyCommandOracle(const Command& cmd, uint64_t clk) const {
+    if (!(cmd.IsReadWrite())) {
+        return Command(); 
+    }
+
+    if (state_ == State::SREF) {
+        return Command();
+    }
+
+    const int idx = static_cast<int>(cmd.cmd_type); // READ 或 WRITE
+    if (clk >= cmd_timing_[idx]) {
+        // 直接返回原样的 READ/WRITE（不改写为 ACT/PRE）
+        return Command(cmd.cmd_type, cmd.addr, cmd.hex_addr);
+    }
+    return Command();
+}
+
+void BankState::UpdateStateOracleForRW(const Command& cmd) {
+
+    if (!(cmd.IsReadWrite())) return;
+
+    if (state_ != State::OPEN || open_row_ != cmd.Row()) {
+        state_ = State::OPEN;
+        open_row_ = cmd.Row();
+        row_hit_count_ = 0;   
+    }
+
+    row_hit_count_++;
+}
+
+
+
 }  // namespace dramsim3
