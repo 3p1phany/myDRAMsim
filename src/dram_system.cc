@@ -165,16 +165,16 @@ void JedecDRAMSystem::ClockTick() {
                 break;
             }
         }
-        while (true) {
-            auto actAddr = ctrls_[i]->ReturnACT(clk_);
-            if (actAddr.row != -1) {
-                act_callback_(actAddr.channel, actAddr.rank,
-                                actAddr.bank, actAddr.row);
-            }
-            else {
-                break;
-            }
-        }
+       // while (true) {
+       //     auto actAddr = ctrls_[i]->ReturnACT(clk_);
+       //     if (actAddr.row != -1) {
+       //         act_callback_(actAddr.channel, actAddr.rank,
+       //                         actAddr.bank, actAddr.row);
+       //     }
+       //     else {
+       //         break;
+       //     }
+       // }
     }
     for (size_t i = 0; i < ctrls_.size(); i++) {
         ctrls_[i]->ClockTick();

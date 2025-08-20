@@ -2,6 +2,7 @@
 #define __CPU_H
 
 #include <fstream>
+#include <iomanip>
 #include <functional>
 #include <random>
 #include <string>
@@ -19,7 +20,10 @@ class CPU {
           clk_(0) {}
     virtual void ClockTick() = 0;
     void ReadCallBack(uint64_t addr) { 
-        std::cout << "Rd complete for " << addr << " at clk " << clk_ << std::endl;
+                std::cout << "Rd complete for 0x"
+                  << std::hex << std::setw(16) << std::setfill('0') << addr
+                  << std::dec
+                  << " at clk " << clk_ << std::endl;
     }
     void WriteCallBack(uint64_t addr) { return; }
     void PrintStats() { memory_system_.PrintStats(); }

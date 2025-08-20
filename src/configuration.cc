@@ -64,7 +64,6 @@ void Config::CalculateSize() {
                 << " page_size " << page_size << " megs_per_bank " << megs_per_bank
                 << " megs_per_rank " << megs_per_rank << " ranks " << ranks 
                 << " channel_size " << channel_size << " channels " << channels << std::endl;
-    std::cout << "[BUILT FOR ART_RH]" << std::endl;
     return;
 }
 
@@ -408,6 +407,16 @@ void Config::SetAddressMapping() {
     ba_mask = (1 << field_widths.at("ba")) - 1;
     ro_mask = (1 << field_widths.at("ro")) - 1;
     co_mask = (1 << field_widths.at("co")) - 1;
+
+    //print out address mapping
+    std::cout << std::hex << std::showbase;
+    std::cout << "ch_mask " << (ch_mask << ch_pos) << std::endl;
+    std::cout << "ra_mask " << (ra_mask << ra_pos) << std::endl;
+    std::cout << "bg_mask " << (bg_mask << bg_pos) << std::endl;
+    std::cout << "ba_mask " << (ba_mask << ba_pos) << std::endl;
+    std::cout << "ro_mask " << (ro_mask << ro_pos) << std::endl;
+    std::cout << "co_mask " << (co_mask << co_pos) << std::endl;
+    std::cout << "row buffer policy "<<row_buf_policy<<std::endl;
 }
 
 }  // namespace dramsim3
