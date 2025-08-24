@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.0.0)
 project(dramsim3)
 
-option(TRANS_TRACE "Enable TRANS_TRACE macro" ON)
-option(CMD_TRACE "Enable CMD_TRACE macro" ON)
+option(TRANS_TRACE "Enable TRANS_TRACE macro" OFF)
+option(CMD_TRACE "Enable CMD_TRACE macro" OFF)
 
 set(default_build_type "Release")
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
