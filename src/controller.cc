@@ -192,7 +192,9 @@ bool Controller::AddTransaction(Transaction trans) {
 
 #ifdef TRANS_TRACE
     auto cmd = TransToCommand(trans);
-    trans_trace_ << std::left << std::setw(18) << clk_ << " " << cmd << std::endl;
+    trans_trace_ << std::left << std::hex << "0x" <<trans.addr 
+                 << std::dec << " " << (trans.is_write? "WRITE":"READ") <<" "
+                 << clk_ << " " << cmd << std::endl;
 #endif  // TRANS_TRACE
 
     if (trans.is_write) {
