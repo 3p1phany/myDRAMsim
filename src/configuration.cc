@@ -417,6 +417,7 @@ void Config::SetAddressMapping() {
     std::cout << "ro_mask " << (ro_mask << ro_pos) << std::endl;
     std::cout << "co_mask " << (co_mask << co_pos) << std::endl;
     std::cout << "row buffer policy "<<row_buf_policy<<std::endl;
+    std::cout << std::dec << std::showbase;
 }
 
 }  // namespace dramsim3

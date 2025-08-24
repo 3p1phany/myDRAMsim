@@ -20,7 +20,7 @@ class CPU {
           clk_(0) {}
     virtual void ClockTick() = 0;
     void ReadCallBack(uint64_t addr) { 
-                std::cout << "Rd complete for 0x"
+                std::cout << "Rd complete for "
                   << std::hex << std::setw(16) << std::setfill('0') << addr
                   << std::dec
                   << " at clk " << clk_ << std::endl;
