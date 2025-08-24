@@ -220,11 +220,16 @@ Timing::Timing(const Config& config)
                 {CommandType::PRECHARGE, precharge_to_precharge},
             };
     }
-
+    //add refresh to read/write constraint for oracle page policy
+    //because no activate is needed here
     // command REFRESH_BANK
     same_rank[static_cast<int>(CommandType::REFRESH_BANK)] =
         std::vector<std::pair<CommandType, int> >{
             {CommandType::ACTIVATE, refresh_to_activate_bank},
+            {CommandType::READ, refresh_to_activate_bank},
+            {CommandType::WRITE, refresh_to_activate_bank},
+            {CommandType::READ_PRECHARGE, refresh_to_activate_bank},
+            {CommandType::WRITE_PRECHARGE, refresh_to_activate_bank},
             {CommandType::REFRESH, refresh_to_activate_bank},
             {CommandType::REFRESH_BANK, refresh_to_activate_bank},
             {CommandType::SREF_ENTER, refresh_to_activate_bank}};
@@ -232,12 +237,20 @@ Timing::Timing(const Config& config)
     other_banks_same_bankgroup[static_cast<int>(CommandType::REFRESH_BANK)] =
         std::vector<std::pair<CommandType, int> >{
             {CommandType::ACTIVATE, refresh_to_activate},
+            {CommandType::READ, refresh_to_activate},
+            {CommandType::WRITE, refresh_to_activate},
+            {CommandType::READ_PRECHARGE, refresh_to_activate},
+            {CommandType::WRITE_PRECHARGE, refresh_to_activate},
             {CommandType::REFRESH_BANK, refresh_to_refresh},
         };
 
     other_bankgroups_same_rank[static_cast<int>(CommandType::REFRESH_BANK)] =
         std::vector<std::pair<CommandType, int> >{
             {CommandType::ACTIVATE, refresh_to_activate},
+            {CommandType::READ, refresh_to_activate},
+            {CommandType::WRITE, refresh_to_activate},
+            {CommandType::READ_PRECHARGE, refresh_to_activate},
+            {CommandType::WRITE_PRECHARGE, refresh_to_activate},
             {CommandType::REFRESH_BANK, refresh_to_refresh},
         };
 
@@ -246,6 +259,10 @@ Timing::Timing(const Config& config)
     same_rank[static_cast<int>(CommandType::REFRESH)] =
         std::vector<std::pair<CommandType, int> >{
             {CommandType::ACTIVATE, refresh_to_activate},
+            {CommandType::READ, refresh_to_activate},
+            {CommandType::WRITE, refresh_to_activate},
+            {CommandType::READ_PRECHARGE, refresh_to_activate},
+            {CommandType::WRITE_PRECHARGE, refresh_to_activate},
             {CommandType::REFRESH, refresh_to_activate},
             {CommandType::SREF_ENTER, refresh_to_activate}};
 
@@ -259,6 +276,10 @@ Timing::Timing(const Config& config)
     same_rank[static_cast<int>(CommandType::SREF_EXIT)] =
         std::vector<std::pair<CommandType, int> >{
             {CommandType::ACTIVATE, self_refresh_exit},
+            {CommandType::READ, self_refresh_exit},
+            {CommandType::WRITE, self_refresh_exit},
+            {CommandType::READ_PRECHARGE,self_refresh_exit },
+            {CommandType::WRITE_PRECHARGE,self_refresh_exit },
             {CommandType::REFRESH, self_refresh_exit},
             {CommandType::REFRESH_BANK, self_refresh_exit},
             {CommandType::SREF_ENTER, self_refresh_exit}};
