@@ -50,42 +50,45 @@ Command CommandQueue::GetCommandToIssue() {
 
 
             if (cmd.IsReadWrite()) {
-                //row hit count in command queue
-                int row_hit_count = std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Channel()  == cmd.Channel()   &&
-                                                                                                     x.Rank()     == cmd.Rank()      &&
-                                                                                                     x.Bankgroup()== cmd.Bankgroup() &&
-                                                                                                     x.Bank()     == cmd.Bank()      &&
-                                                                                                     x.Row()      == cmd.Row();});
-                //TODO check row hit trans ?
-                // will trans go to command queue very quickly? not sure yet
-                const auto& RQ = controller_->read_queue();
-                for(const auto& it:RQ){
-                    Command cmd_it= controller_ -> TransToCommand(it);
-                    if(cmd_it.Channel()   == cmd.Channel() && 
-                       cmd_it.Rank()      == cmd.Rank()    && 
-                       cmd_it.Bankgroup() == cmd.Bankgroup() && 
-                       cmd_it.Bank()      == cmd.Bank()     &&
-                       cmd_it.Row()       == cmd.Row())
-                    row_hit_count ++;
+                if(controller_ ->row_buf_policy_ == RowBufPolicy::SMART_CLOSE){
+                    //row hit count in command queue
+                    int row_hit_count = std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Channel()  == cmd.Channel()   &&
+                                                                                                         x.Rank()     == cmd.Rank()      &&
+                                                                                                         x.Bankgroup()== cmd.Bankgroup() &&
+                                                                                                         x.Bank()     == cmd.Bank()      &&
+                                                                                                         x.Row()      == cmd.Row();});
+                    //TODO check row hit trans ?
+                    // will trans go to command queue very quickly? not sure yet
+                    const auto& RQ = controller_->read_queue();
+                    for(const auto& it:RQ){
+                        Command cmd_it= controller_ -> TransToCommand(it);
+                        if(cmd_it.Channel()   == cmd.Channel() && 
+                           cmd_it.Rank()      == cmd.Rank()    && 
+                           cmd_it.Bankgroup() == cmd.Bankgroup() && 
+                           cmd_it.Bank()      == cmd.Bank()     &&
+                           cmd_it.Row()       == cmd.Row())
+                        row_hit_count ++;
+                    }
+
+                    const auto& WB = controller_->write_buffer();
+                    for(const auto& it:WB){
+                        Command cmd_it= controller_ -> TransToCommand(it);
+                        if(cmd_it.Channel()   == cmd.Channel() && 
+                           cmd_it.Rank()      == cmd.Rank()    && 
+                           cmd_it.Bankgroup() == cmd.Bankgroup() && 
+                           cmd_it.Bank()      == cmd.Bank()     &&
+                           cmd_it.Row()       == cmd.Row())
+                        row_hit_count ++;
+                    }
+                    //end of row hit command cluster
+                    //strong indication of autoPRE!!!
+                    if(row_hit_count==1){
+                       cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
+                                      cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
+                    }
+                    std::cout << "row_hit_count when issued: "<<row_hit_count<<std::endl; 
                 }
 
-                const auto& WB = controller_->write_buffer();
-                for(const auto& it:WB){
-                    Command cmd_it= controller_ -> TransToCommand(it);
-                    if(cmd_it.Channel()   == cmd.Channel() && 
-                       cmd_it.Rank()      == cmd.Rank()    && 
-                       cmd_it.Bankgroup() == cmd.Bankgroup() && 
-                       cmd_it.Bank()      == cmd.Bank()     &&
-                       cmd_it.Row()       == cmd.Row())
-                    row_hit_count ++;
-                }
-                //end of row hit command cluster
-                //strong indication of autoPRE!!!
-                if(row_hit_count==1){
-                   cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
-                                  cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
-                }
-                std::cout << "row_hit_count when issued: "<<row_hit_count<<std::endl; 
                 EraseRWCommand(cmd);
             }
             return cmd;
