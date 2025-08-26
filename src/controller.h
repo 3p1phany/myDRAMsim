@@ -17,7 +17,7 @@
 
 namespace dramsim3 {
 
-enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE,ORACLE, SIZE };
+enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE,ORACLE,SMART_CLOSE, SIZE };
 
 class Controller {
    public:
@@ -37,10 +37,11 @@ class Controller {
     void ResetStats() { simple_stats_.Reset(); }
     std::pair<uint64_t, int> ReturnDoneTrans(uint64_t clock);
     Address ReturnACT(uint64_t clock);
-
+    const std::vector<Transaction>& read_queue() const { return read_queue_; }
+    const std::vector<Transaction>& write_buffer() const { return write_buffer_; }
     int channel_id_;
 
-   private:
+  // private:
     uint64_t clk_;
     const Config &config_;
     SimpleStats simple_stats_;
@@ -87,7 +88,7 @@ class Controller {
     int write_draining_;
     void ScheduleTransaction();
     void IssueCommand(const Command &tmp_cmd);
-    Command TransToCommand(const Transaction &trans);
+    Command TransToCommand(const Transaction &trans) const;
     void UpdateCommandStats(const Command &cmd);
 };
 }  // namespace dramsim3

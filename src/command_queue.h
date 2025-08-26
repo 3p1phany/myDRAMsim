@@ -10,6 +10,7 @@
 
 namespace dramsim3 {
 
+class Controller;
 using CMDIterator = std::vector<Command>::iterator;
 using CMDQueue = std::vector<Command>;
 enum class QueueStructure { PER_RANK, PER_BANK, SIZE };
@@ -17,7 +18,7 @@ enum class QueueStructure { PER_RANK, PER_BANK, SIZE };
 class CommandQueue {
    public:
     CommandQueue(int channel_id, const Config& config,
-                 const ChannelState& channel_state, SimpleStats& simple_stats);
+                 const ChannelState& channel_state, SimpleStats& simple_stats,const Controller* controller);
     Command GetCommandToIssue();
     Command FinishRefresh();
     void ClockTick() { clk_ += 1; };
@@ -55,6 +56,8 @@ class CommandQueue {
     size_t queue_size_;
     int queue_idx_;
     uint64_t clk_;
+    //
+    const Controller* controller_;
 };
 
 }  // namespace dramsim3

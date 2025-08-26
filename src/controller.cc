@@ -16,13 +16,14 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
       config_(config),
       simple_stats_(config_, channel_id_),
       channel_state_(config, timing),
-      cmd_queue_(channel_id_, config, channel_state_, simple_stats_),
+      cmd_queue_(channel_id_, config, channel_state_, simple_stats_,this),
       refresh_(config, channel_state_),
 #ifdef THERMAL
       thermal_calc_(thermal_calc),
 #endif  // THERMAL
       is_unified_queue_(config.unified_queue),
       row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
+                      config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
                       config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {
@@ -331,10 +332,11 @@ void Controller::IssueCommand(const Command &cmd) {
     channel_state_.UpdateTimingAndStates(cmd, clk_);
 }
 
-Command Controller::TransToCommand(const Transaction &trans) {
+Command Controller::TransToCommand(const Transaction &trans)const {
     auto addr = config_.AddressMapping(trans.addr);
     CommandType cmd_type;
-    if (row_buf_policy_ == RowBufPolicy::OPEN_PAGE || row_buf_policy_ == RowBufPolicy::ORACLE) {
+    if (row_buf_policy_ == RowBufPolicy::OPEN_PAGE || row_buf_policy_ == RowBufPolicy::ORACLE || 
+        row_buf_policy_ == RowBufPolicy::SMART_CLOSE) {
         cmd_type = trans.is_write ? CommandType::WRITE : CommandType::READ;
     } else {
         cmd_type = trans.is_write ? CommandType::WRITE_PRECHARGE
