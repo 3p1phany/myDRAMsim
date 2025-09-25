@@ -38,7 +38,7 @@ class CommandQueue {
     CMDQueue& GetQueue(int rank, int bankgroup, int bank);
     CMDQueue& GetNextQueue();
     void GetRefQIndices(const Command& ref);
-    void EraseRWCommand(const Command& cmd);
+    void EraseRWCommand(const Command& cmd,bool autoPRE_added);
     Command PrepRefCmd(const CMDIterator& it, const Command& ref) const;
 
     QueueStructure queue_structure_;

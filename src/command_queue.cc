@@ -47,9 +47,8 @@ Command CommandQueue::GetCommandToIssue() {
         }
         auto cmd = GetFirstReadyInQueue(queue);
         if (cmd.IsValid()) {
-
-
             if (cmd.IsReadWrite()) {
+                bool autoPRE_added = false;
                 if(controller_ ->row_buf_policy_ == RowBufPolicy::SMART_CLOSE){
                     //row hit count in command queue
                     int row_hit_count = std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Channel()  == cmd.Channel()   &&
@@ -81,15 +80,15 @@ Command CommandQueue::GetCommandToIssue() {
                         row_hit_count ++;
                     }
                     //end of row hit command cluster
-                    //strong indication of autoPRE!!!
+                    //strong indicator of autoPRE!!!
                     if(row_hit_count==1){
-                       cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
-                                      cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
+                        cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
+                                       cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
+                        autoPRE_added=true;
                     }
-                    std::cout << "row_hit_count when issued: "<<row_hit_count<<std::endl; 
                 }
 
-                EraseRWCommand(cmd);
+                EraseRWCommand(cmd,autoPRE_added);
             }
             return cmd;
         }
@@ -241,17 +240,24 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue) const {
     return Command();
 }
 
-void CommandQueue::EraseRWCommand(const Command& cmd) {
+void CommandQueue::EraseRWCommand(const Command& cmd,bool autoPRE_added) {
     auto& queue = GetQueue(cmd.Rank(), cmd.Bankgroup(), cmd.Bank());
     for (auto cmd_it = queue.begin(); cmd_it != queue.end(); cmd_it++) {
-        if (cmd.hex_addr == cmd_it->hex_addr && cmd.cmd_type == cmd_it->cmd_type) {
-            queue.erase(cmd_it);
-            return;
+        if (cmd.hex_addr == cmd_it->hex_addr) {
+            auto no_autoPRE_type_eq = !autoPRE_added && (cmd.cmd_type == cmd_it->cmd_type);
+            auto autoPRE_type_eq_rd =  autoPRE_added && (cmd.cmd_type == CommandType::READ_PRECHARGE && cmd_it->cmd_type == CommandType::READ);
+            auto autoPRE_type_eq_wr =  autoPRE_added && (cmd.cmd_type == CommandType::WRITE_PRECHARGE && cmd_it->cmd_type == CommandType::WRITE);
+            
+            if(no_autoPRE_type_eq || autoPRE_type_eq_rd || autoPRE_type_eq_wr){
+                queue.erase(cmd_it);
+                return;
+            }
         }
     }
     std::cerr << "cannot find cmd!" << std::endl;
     exit(1);
 }
+
 
 int CommandQueue::QueueUsage() const {
     int usage = 0;
