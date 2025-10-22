@@ -17,7 +17,7 @@
 
 namespace dramsim3 {
 
-enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE,ORACLE,SMART_CLOSE, SIZE };
+enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE,ORACLE,SMART_CLOSE,DPM,SIZE };
 
 class Controller {
    public:
@@ -72,6 +72,8 @@ class Controller {
 
     // row buffer policy
     RowBufPolicy row_buf_policy_;
+    // true page policy if in dynamic page policies
+    RowBufPolicy true_row_buf_policy_;
 
 #ifdef CMD_TRACE
     std::ofstream cmd_trace_;

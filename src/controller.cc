@@ -24,9 +24,13 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
       is_unified_queue_(config.unified_queue),
       row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
                       config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
+                      config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
                       config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {
+
+      //init true row buffer policy to open page 
+      true_row_buf_policy_=config.row_buf_policy=="DPM" ? RowBufPolicy::OPEN_PAGE : row_buf_policy_;
 
       issuing_refresh_seq_ = false;
       issuing_sref_seq_ = false; 
@@ -289,7 +293,7 @@ void Controller::IssueCommand(const Command &cmd) {
     }
 
     // Invariant (Oracle): demand path must not issue ACT/PRE
-    if (row_buf_policy_ == RowBufPolicy::ORACLE &&
+    if (true_row_buf_policy_ == RowBufPolicy::ORACLE &&
         (cmd.cmd_type == CommandType::ACTIVATE || cmd.cmd_type == CommandType::PRECHARGE) &&
         !issuing_refresh_seq_ && !issuing_sref_seq_) {
         std::cerr << "[ORACLE] Demand ACT/PRE issued unexpectedly at clk="
@@ -335,12 +339,11 @@ void Controller::IssueCommand(const Command &cmd) {
 Command Controller::TransToCommand(const Transaction &trans)const {
     auto addr = config_.AddressMapping(trans.addr);
     CommandType cmd_type;
-    if (row_buf_policy_ == RowBufPolicy::OPEN_PAGE || row_buf_policy_ == RowBufPolicy::ORACLE || 
-        row_buf_policy_ == RowBufPolicy::SMART_CLOSE) {
-        cmd_type = trans.is_write ? CommandType::WRITE : CommandType::READ;
+    if (row_buf_policy_==RowBufPolicy::CLOSE_PAGE) {
+        cmd_type = trans.is_write ? CommandType::WRITE_PRECHARGE : CommandType::READ_PRECHARGE;
     } else {
-        cmd_type = trans.is_write ? CommandType::WRITE_PRECHARGE
-                                  : CommandType::READ_PRECHARGE;
+        cmd_type = trans.is_write ? CommandType::WRITE
+                                  : CommandType::READ;
     }
     return Command(cmd_type, addr, trans.addr);
 }

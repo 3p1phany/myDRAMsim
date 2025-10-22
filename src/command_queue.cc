@@ -34,6 +34,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         cmd_queue.reserve(config_.cmd_queue_size);
         queues_.push_back(cmd_queue);
     }
+    //do not size victime_cmds for now
+    //leave it for furthur investigation
+    victim_cmds_.reserve(num_queues_);
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -49,42 +52,43 @@ Command CommandQueue::GetCommandToIssue() {
         if (cmd.IsValid()) {
             if (cmd.IsReadWrite()) {
                 bool autoPRE_added = false;
-                if(controller_ ->row_buf_policy_ == RowBufPolicy::SMART_CLOSE){
-                    //row hit count in command queue
-                    int row_hit_count = std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Channel()  == cmd.Channel()   &&
-                                                                                                         x.Rank()     == cmd.Rank()      &&
-                                                                                                         x.Bankgroup()== cmd.Bankgroup() &&
-                                                                                                         x.Bank()     == cmd.Bank()      &&
-                                                                                                         x.Row()      == cmd.Row();});
-                    //TODO check row hit trans ?
-                    // will trans go to command queue very quickly? not sure yet
-                    const auto& RQ = controller_->read_queue();
-                    for(const auto& it:RQ){
-                        Command cmd_it= controller_ -> TransToCommand(it);
-                        if(cmd_it.Channel()   == cmd.Channel() && 
-                           cmd_it.Rank()      == cmd.Rank()    && 
-                           cmd_it.Bankgroup() == cmd.Bankgroup() && 
-                           cmd_it.Bank()      == cmd.Bank()     &&
-                           cmd_it.Row()       == cmd.Row())
-                        row_hit_count ++;
-                    }
+                //row hit count in command queue
+                int row_hit_count = std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Channel()  == cmd.Channel()   &&
+                                                                                                     x.Rank()     == cmd.Rank()      &&
+                                                                                                     x.Bankgroup()== cmd.Bankgroup() &&
+                                                                                                     x.Bank()     == cmd.Bank()      &&
+                                                                                                     x.Row()      == cmd.Row();});
+                //TODO check row hit trans ?
+                // will trans go to command queue very quickly? not sure yet
+                const auto& RQ = controller_->read_queue();
+                for(const auto& it:RQ){
+                    Command cmd_it= controller_ -> TransToCommand(it);
+                    if(cmd_it.Channel()   == cmd.Channel() && 
+                       cmd_it.Rank()      == cmd.Rank()    && 
+                       cmd_it.Bankgroup() == cmd.Bankgroup() && 
+                       cmd_it.Bank()      == cmd.Bank()     &&
+                       cmd_it.Row()       == cmd.Row())
+                    row_hit_count ++;
+                }
 
-                    const auto& WB = controller_->write_buffer();
-                    for(const auto& it:WB){
-                        Command cmd_it= controller_ -> TransToCommand(it);
-                        if(cmd_it.Channel()   == cmd.Channel() && 
-                           cmd_it.Rank()      == cmd.Rank()    && 
-                           cmd_it.Bankgroup() == cmd.Bankgroup() && 
-                           cmd_it.Bank()      == cmd.Bank()     &&
-                           cmd_it.Row()       == cmd.Row())
-                        row_hit_count ++;
-                    }
-                    //end of row hit command cluster
-                    //strong indicator of autoPRE!!!
+                const auto& WB = controller_->write_buffer();
+                for(const auto& it:WB){
+                    Command cmd_it= controller_ -> TransToCommand(it);
+                    if(cmd_it.Channel()   == cmd.Channel() && 
+                       cmd_it.Rank()      == cmd.Rank()    && 
+                       cmd_it.Bankgroup() == cmd.Bankgroup() && 
+                       cmd_it.Bank()      == cmd.Bank()     &&
+                       cmd_it.Row()       == cmd.Row())
+                    row_hit_count ++;
+                }
+                //end of row hit command cluster
+                //strong indicator of autoPRE!!!
+                if(controller_ ->true_row_buf_policy_ == RowBufPolicy::SMART_CLOSE){
                     if(row_hit_count==1){
                         cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
                                        cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
                         autoPRE_added=true;
+                        victim_cmds_[queue_idx_].push_back(cmd);
                     }
                 }
 
@@ -111,6 +115,10 @@ Command CommandQueue::FinishRefresh() {
     auto cmd = channel_state_.GetReadyCommand(ref, clk_);
 
     if (cmd.IsRefresh()) {
+        //clear refresh related victims.
+        for(auto i:ref_q_indices_){
+            victim_cmds_[i].clear();
+        }
         ref_q_indices_.clear();
         is_in_ref_ = false;
     }
@@ -174,6 +182,9 @@ bool CommandQueue::AddCommand(Command cmd) {
         rank_q_empty[cmd.Rank()] = false;
         return true;
     } else {
+        int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
+        //if cmdq is full, there will not be any chance to schedule incomming row hit requests
+        victim_cmds_[index].clear();
         return false;
     }
 }
