@@ -21,15 +21,14 @@ class CommandQueue {
                  const ChannelState& channel_state, SimpleStats& simple_stats,const Controller* controller);
     Command GetCommandToIssue();
     Command FinishRefresh();
-    void ClockTick() { clk_ += 1; };
+    void ArbitratePagePolicy();
+    void ClockTick() { clk_ += 1;ArbitratePagePolicy();};
     bool WillAcceptCommand(int rank, int bankgroup, int bank) const;
     bool AddCommand(Command cmd);
     bool QueueEmpty() const;
     int QueueUsage() const;
     std::vector<bool> rank_q_empty;
     std::vector<CMDQueue> victim_cmds_;
-    std::vector<double> row_hit_rate;
-
    private:
     bool ArbitratePrecharge(const CMDIterator& cmd_it,
                             const CMDQueue& queue) const;
@@ -49,6 +48,7 @@ class CommandQueue {
     SimpleStats& simple_stats_;
 
     std::vector<CMDQueue> queues_;
+    std::vector<int> bank_sm;
 
     // Refresh related data structures
     std::unordered_set<int> ref_q_indices_;
@@ -60,6 +60,15 @@ class CommandQueue {
     uint64_t clk_;
     //
     const Controller* controller_;
+
+    //total r/w command count issued in every schedule interval
+    std::vector<int> total_command_count_;
+
+    //row hit r/w command count issued in every schedule interval, including those targeting victim commands
+    std::vector<int> true_row_hit_count_;
+    //reserve for dpm 
+    std::vector<RowBufPolicy> row_buf_policy_;
+
 };
 
 }  // namespace dramsim3

@@ -37,6 +37,30 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     //do not size victime_cmds for now
     //leave it for furthur investigation
     victim_cmds_.reserve(num_queues_);
+
+    total_command_count_.reserve(num_queues_);
+    true_row_hit_count_.reserve(num_queues_);
+    row_buf_policy_.reserve(num_queues_);
+    //page_policy init for every bank
+    for(auto& pp : row_buf_policy_){
+        if(controller_->row_buf_policy_==RowBufPolicy::CLOSE_PAGE){
+            pp=RowBufPolicy::CLOSE_PAGE;
+        }
+        else if(controller_->row_buf_policy_==RowBufPolicy::OPEN_PAGE){
+            pp=RowBufPolicy::OPEN_PAGE;
+        }
+        else if(controller_->row_buf_policy_==RowBufPolicy::SMART_CLOSE){
+            pp=RowBufPolicy::SMART_CLOSE;
+        }
+        else if(controller_->row_buf_policy_==RowBufPolicy::DPM){
+            pp=RowBufPolicy::OPEN_PAGE;
+        }
+    }
+    //bank_sm
+    bank_sm.reserve(num_queues_);
+    for(auto& sm: bank_sm){
+        sm=3;
+    }
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -83,8 +107,9 @@ Command CommandQueue::GetCommandToIssue() {
                 }
                 //end of row hit command cluster
                 //strong indicator of autoPRE!!!
-                if(controller_ ->true_row_buf_policy_ == RowBufPolicy::SMART_CLOSE){
-                    if(row_hit_count==1){
+                if(row_buf_policy_[queue_idx_] == RowBufPolicy::SMART_CLOSE){
+                    if(row_hit_count==1 && 
+                       controller_->channel_state_.OpenRow(cmd.Rank(),cmd.Bankgroup(),cmd.Bank()) == cmd.Row()){
                         cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
                                        cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
                         autoPRE_added=true;
@@ -93,6 +118,23 @@ Command CommandQueue::GetCommandToIssue() {
                 }
 
                 EraseRWCommand(cmd,autoPRE_added);
+                //compute total command count for each bank
+                total_command_count_[queue_idx_]++;
+
+                //compute true row_hit command targeting open row or victim rows
+                bool true_row_hit=false;
+                if(controller_->channel_state_.OpenRow(cmd.Rank(),cmd.Bankgroup(),cmd.Bank()) == cmd.Row()){
+                    true_row_hit=true;
+                }
+                for(auto& v:victim_cmds_[queue_idx_]){
+                    if(v.Rank()==cmd.Rank() && v.Bankgroup()==cmd.Bankgroup() && v.Bank() == cmd.Bank() && v.Row() == cmd.Row()){
+                        true_row_hit=true;
+                    }
+                }
+                if(true_row_hit){
+                    true_row_hit_count_[queue_idx_]++;
+                }
+
             }
             return cmd;
         }
@@ -100,6 +142,61 @@ Command CommandQueue::GetCommandToIssue() {
     return Command();
 }
 
+void CommandQueue::ArbitratePagePolicy(){
+    //not in arbitration cycle
+    if((clk_%1000 !=0) || clk_ <1000){
+        return; 
+    }
+    if(controller_->row_buf_policy_==RowBufPolicy::DPM){
+        for(int i=0;i<num_queues_;i++){
+            if(row_buf_policy_[i]==RowBufPolicy::OPEN_PAGE){
+                // a/b < 0.25
+                if(true_row_hit_count_[i]<(total_command_count_[i]>>2)){
+                    bank_sm[i]=0;
+                    row_buf_policy_[i]=RowBufPolicy::SMART_CLOSE;
+                }        
+                // a/b < 0.5
+                else if(true_row_hit_count_[i]<(total_command_count_[i]>>1)){
+                    bank_sm[i] = bank_sm[i]==0 ?  0: bank_sm[i]-1;
+                }
+                // a/b >= 0.5
+                else {
+                    bank_sm[i] = bank_sm[i]==3 ?  3: bank_sm[i]+1;
+                }
+
+                if(bank_sm[i]<=1){
+                    row_buf_policy_[i]=RowBufPolicy::SMART_CLOSE;
+                }
+                else{
+                    row_buf_policy_[i]=RowBufPolicy::OPEN_PAGE;
+                }
+            }
+            else if(row_buf_policy_[i]==RowBufPolicy::SMART_CLOSE){
+                // a/b >= 0.75
+                if(true_row_hit_count_[i]>=0.75*total_command_count_[i]){
+                    bank_sm[i]=3;
+                    row_buf_policy_[i]=RowBufPolicy::OPEN_PAGE;
+                }
+                // a/b < 0.5
+                else if(true_row_hit_count_[i]<(total_command_count_[i]>>1)){
+                    bank_sm[i] = bank_sm[i]==0 ?  0: bank_sm[i]-1;
+                }
+                // a/b >= 0.5
+                else {
+                    bank_sm[i] = bank_sm[i]==3 ?  3: bank_sm[i]+1;
+                }
+
+                if(bank_sm[i]>=2){
+                    row_buf_policy_[i]=RowBufPolicy::OPEN_PAGE;
+                }
+                else{
+                    row_buf_policy_[i]=RowBufPolicy::SMART_CLOSE;
+                }
+            }
+
+        }
+    } 
+}
 Command CommandQueue::FinishRefresh() {
     // we can do something fancy here like clearing the R/Ws
     // that already had ACT on the way but by doing that we
@@ -118,6 +215,8 @@ Command CommandQueue::FinishRefresh() {
         //clear refresh related victims.
         for(auto i:ref_q_indices_){
             victim_cmds_[i].clear();
+            total_command_count_[i]=0;
+            true_row_hit_count_[i]=0;
         }
         ref_q_indices_.clear();
         is_in_ref_ = false;

@@ -29,8 +29,6 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
       last_trans_clk_(0),
       write_draining_(0) {
 
-      //init true row buffer policy to open page 
-      true_row_buf_policy_=config.row_buf_policy=="DPM" ? RowBufPolicy::OPEN_PAGE : row_buf_policy_;
 
       issuing_refresh_seq_ = false;
       issuing_sref_seq_ = false; 
@@ -293,7 +291,7 @@ void Controller::IssueCommand(const Command &cmd) {
     }
 
     // Invariant (Oracle): demand path must not issue ACT/PRE
-    if (true_row_buf_policy_ == RowBufPolicy::ORACLE &&
+    if (row_buf_policy_ == RowBufPolicy::ORACLE &&
         (cmd.cmd_type == CommandType::ACTIVATE || cmd.cmd_type == CommandType::PRECHARGE) &&
         !issuing_refresh_seq_ && !issuing_sref_seq_) {
         std::cerr << "[ORACLE] Demand ACT/PRE issued unexpectedly at clk="
