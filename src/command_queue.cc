@@ -36,13 +36,13 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     }
     //do not size victime_cmds for now
     //leave it for furthur investigation
-    victim_cmds_.reserve(num_queues_);
+    victim_cmds_.resize(num_queues_);
 
-    total_command_count_.reserve(num_queues_);
-    true_row_hit_count_.reserve(num_queues_);
-    row_buf_policy_.reserve(num_queues_);
+    total_command_count_.resize(num_queues_);
+    true_row_hit_count_.resize(num_queues_);
+    row_buf_policy_.resize(num_queues_);
     //page_policy init for every bank
-    for(auto& pp : row_buf_policy_){
+    for(auto& pp:row_buf_policy_){
         if(controller_->row_buf_policy_==RowBufPolicy::CLOSE_PAGE){
             pp=RowBufPolicy::CLOSE_PAGE;
         }
@@ -57,7 +57,7 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         }
     }
     //bank_sm
-    bank_sm.reserve(num_queues_);
+    bank_sm.resize(num_queues_);
     for(auto& sm: bank_sm){
         sm=3;
     }
