@@ -21,6 +21,7 @@ BankState::BankState()
 
 Command BankState::GetReadyCommand(const Command& cmd, uint64_t clk) const {
     CommandType required_type = CommandType::SIZE;
+    Address new_addr = cmd.addr;
     switch (state_) {
         case State::CLOSED:
             switch (cmd.cmd_type) {
@@ -50,6 +51,8 @@ Command BankState::GetReadyCommand(const Command& cmd, uint64_t clk) const {
                     if (cmd.Row() == open_row_) {
                         required_type = cmd.cmd_type;
                     } else {
+                        //change the row to open row
+                        new_addr.row=open_row_;
                         required_type = CommandType::PRECHARGE;
                     }
                     break;
@@ -87,7 +90,7 @@ Command BankState::GetReadyCommand(const Command& cmd, uint64_t clk) const {
 
     if (required_type != CommandType::SIZE) {
         if (clk >= cmd_timing_[static_cast<int>(required_type)]) {
-            return Command(required_type, cmd.addr, cmd.hex_addr, 
+            return Command(required_type, new_addr, cmd.hex_addr, 
                             (required_type == CommandType::ACTIVATE));
         }
     }

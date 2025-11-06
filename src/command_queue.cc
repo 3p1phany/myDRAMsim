@@ -136,6 +136,13 @@ void CommandQueue::ArbitratePagePolicy(){
     if((clk_%1000 !=0) || clk_ <1000){
         return; 
     }
+    std::cout<<"true row hit count:"<<std::endl;
+    std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+    std::cout << std::endl;
+    std::cout<<"total row hit count:"<<std::endl;
+    std::copy(total_command_count_.begin(), total_command_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+    std::cout << std::endl;
+
     if(controller_->row_buf_policy_==RowBufPolicy::DPM){
         for(int i=0;i<num_queues_;i++){
             if(row_buf_policy_[i]==RowBufPolicy::OPEN_PAGE){
@@ -329,6 +336,11 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
         // means cmd is a row hit command
         if(cmd.IsReadWrite()){
             true_row_hit=true;
+            // will not happen in normal case
+            // if a read does not return, issuing write to the same address is absurd
+            if(cmd.IsWrite() && HasRWDependency(cmd_it, queue)){
+                continue;
+            }  
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {
             if (!ArbitratePrecharge(cmd_it, queue)) {
@@ -340,19 +352,13 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
                     true_row_hit=true;
                 }
             }
-            if(true_row_hit){
-                true_row_hit_count_[queue_idx_]++;
-            }
 
             //if precharge occurs, it means switching rows
             victim_cmds_[queue_idx_].push_back(cmd);
+        } 
 
-        } else if (cmd.IsWrite()) {
-            // will not happen in normal case
-            // if a read does not return, issuing write to the same address is absurd
-            if (HasRWDependency(cmd_it, queue)) {
-                continue;
-            }
+        if(true_row_hit){
+            true_row_hit_count_[queue_idx_]++;
         }
         
         return cmd;
