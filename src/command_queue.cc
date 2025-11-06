@@ -108,8 +108,7 @@ Command CommandQueue::GetCommandToIssue() {
                 //end of row hit command cluster
                 //strong indicator of autoPRE!!!
                 if(row_buf_policy_[queue_idx_] == RowBufPolicy::SMART_CLOSE){
-                    if(row_hit_count==1 && 
-                       controller_->channel_state_.OpenRow(cmd.Rank(),cmd.Bankgroup(),cmd.Bank()) == cmd.Row()){
+                    if(row_hit_count==1){
                         cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
                                        cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
                         autoPRE_added=true;
