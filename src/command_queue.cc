@@ -78,35 +78,32 @@ Command CommandQueue::GetCommandToIssue() {
                 bool autoPRE_added = false;
                 //row hit count in command queue
                 int row_hit_count=0;
-                if(cmd.IsWrite()){
-                    //check command queue for row hit cmds
-                    row_hit_count += std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Row() == cmd.Row() && x.IsWrite();});
-                    //check transaction buffer
-                    const auto& WB = controller_->write_buffer();
-                    for(const auto& it:WB){
-                        Command cmd_it= controller_ -> TransToCommand(it);
-                        if(cmd_it.Channel()   == cmd.Channel() && 
-                           cmd_it.Rank()      == cmd.Rank()    && 
-                           cmd_it.Bankgroup() == cmd.Bankgroup() && 
-                           cmd_it.Bank()      == cmd.Bank()     &&
-                           cmd_it.Row()       == cmd.Row() &&
-                           queue.size() < queue_size_)
-                        row_hit_count ++;
-                    }
+                //check command queue for row hit cmds
+                row_hit_count += std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Row() == cmd.Row() && x.IsWrite();});
+                //check transaction buffer
+                const auto& WB = controller_->write_buffer();
+                for(const auto& it:WB){
+                    Command cmd_it= controller_ -> TransToCommand(it);
+                    if(cmd_it.Channel()   == cmd.Channel() && 
+                       cmd_it.Rank()      == cmd.Rank()    && 
+                       cmd_it.Bankgroup() == cmd.Bankgroup() && 
+                       cmd_it.Bank()      == cmd.Bank()     &&
+                       cmd_it.Row()       == cmd.Row() &&
+                       queue.size() < queue_size_)
+                    row_hit_count ++;
                 }
-                else if(cmd.IsRead()){
-                    row_hit_count += std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Row() == cmd.Row() && x.IsRead();});
-                    const auto& RQ = controller_->read_queue();
-                    for(const auto& it:RQ){
-                        Command cmd_it= controller_ -> TransToCommand(it);
-                        if(cmd_it.Channel()   == cmd.Channel() && 
-                           cmd_it.Rank()      == cmd.Rank()    && 
-                           cmd_it.Bankgroup() == cmd.Bankgroup() && 
-                           cmd_it.Bank()      == cmd.Bank()     &&
-                           cmd_it.Row()       == cmd.Row()     && 
-                           queue.size() < queue_size_)
-                        row_hit_count ++;
-                    }
+
+                row_hit_count += std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Row() == cmd.Row() && x.IsRead();});
+                const auto& RQ = controller_->read_queue();
+                for(const auto& it:RQ){
+                    Command cmd_it= controller_ -> TransToCommand(it);
+                    if(cmd_it.Channel()   == cmd.Channel() && 
+                       cmd_it.Rank()      == cmd.Rank()    && 
+                       cmd_it.Bankgroup() == cmd.Bankgroup() && 
+                       cmd_it.Bank()      == cmd.Bank()     &&
+                       cmd_it.Row()       == cmd.Row()     && 
+                       queue.size() < queue_size_)
+                    row_hit_count ++;
                 }
 
                 //end of row hit command cluster
