@@ -30,6 +30,21 @@ Config::Config(std::string config_file, std::string out_dir)
     delete (reader_);
 }
 
+uint64_t Config::GetHexAddress(const Address& addr) const {
+    uint64_t hex_addr = 0;
+
+    hex_addr |= (static_cast<uint64_t>(addr.channel) << ch_pos);
+    hex_addr |= (static_cast<uint64_t>(addr.rank)    << ra_pos);
+    hex_addr |= (static_cast<uint64_t>(addr.bankgroup)      << bg_pos);
+    hex_addr |= (static_cast<uint64_t>(addr.bank)      << ba_pos);
+    hex_addr |= (static_cast<uint64_t>(addr.row)      << ro_pos);
+    hex_addr |= (static_cast<uint64_t>(addr.column)      << co_pos);
+
+    hex_addr <<= shift_bits;
+
+    return hex_addr;
+}
+
 Address Config::AddressMapping(uint64_t hex_addr) const {
     hex_addr >>= shift_bits;
     int channel = (hex_addr >> ch_pos) & ch_mask;

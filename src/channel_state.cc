@@ -14,7 +14,7 @@ ChannelState::ChannelState(const Config& config, const Timing& timing)
         rank_states.reserve(config_.bankgroups);
         for (auto j = 0; j < config_.bankgroups; j++) {
             auto bg_states =
-                std::vector<BankState>(config_.banks_per_group, BankState());
+                std::vector<BankState>(config_.banks_per_group, BankState(config_));
             rank_states.push_back(bg_states);
         }
         bank_states_.push_back(rank_states);

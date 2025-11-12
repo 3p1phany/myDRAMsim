@@ -3,12 +3,13 @@
 
 #include <vector>
 #include "common.h"
+#include "configuration.h"
 
 namespace dramsim3 {
 
 class BankState {
    public:
-    BankState();
+    BankState(const Config& config);
 
     enum class State { OPEN, CLOSED, SREF, PD, SIZE };
     Command GetReadyCommand(const Command& cmd, uint64_t clk) const;
@@ -38,6 +39,8 @@ class BankState {
 
     // consecutive accesses to one row
     int row_hit_count_;
+
+    const Config& config_;
 };
 
 }  // namespace dramsim3
