@@ -332,24 +332,29 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
         bool true_row_hit=false;
         // means cmd is a row hit command
         if(cmd.IsReadWrite()){
-            true_row_hit=true;
             // will not happen in normal case
             // if a read does not return, issuing write to the same address is absurd
             if(cmd.IsWrite() && HasRWDependency(cmd_it, queue)){
                 continue;
-            }  
+            }
+            if (cmd_it->induced_precharge) {
+                // row hit already counted when its precharge was scheduled
+                cmd_it->induced_precharge = false;
+            } else {
+                true_row_hit=true;
+            }
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {
             if (!ArbitratePrecharge(cmd_it, queue)) {
                 continue;
             }
+            cmd_it->induced_precharge = true;
             //check victim_cmds to verify whether cmd_it can be a possible row hit  
             for(auto& v:victim_cmds_[queue_idx_]){
                 if(v.Row() == cmd_it->Row()){
                     true_row_hit=true;
                 }
             }
-
             //if precharge occurs, it means switching rows
             victim_cmds_[queue_idx_].push_back(cmd);
         } 
@@ -357,7 +362,6 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
         if(true_row_hit){
             true_row_hit_count_[queue_idx_]++;
         }
-        
         return cmd;
     }
     return Command();

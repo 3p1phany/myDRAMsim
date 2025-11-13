@@ -98,6 +98,7 @@ struct Command {
     CommandType cmd_type;
     Address addr;
     bool reqd_ACT = false;
+    bool induced_precharge = false;
     uint64_t hex_addr;
 
     int Channel() const { return addr.channel; }
