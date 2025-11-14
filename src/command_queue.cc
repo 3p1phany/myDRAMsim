@@ -133,12 +133,12 @@ void CommandQueue::ArbitratePagePolicy(){
     if((clk_%1000 !=0) || clk_ <1000){
         return; 
     }
-    std::cout<<"true row hit count:"<<std::endl;
-    std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
-    std::cout << std::endl;
-    std::cout<<"total row hit count:"<<std::endl;
-    std::copy(total_command_count_.begin(), total_command_count_.end(), std::ostream_iterator<int>(std::cout, " "));
-    std::cout << std::endl;
+    //std::cout<<"true row hit count:"<<std::endl;
+    //std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+    //std::cout << std::endl;
+    //std::cout<<"total command count:"<<std::endl;
+    //std::copy(total_command_count_.begin(), total_command_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+    //std::cout << std::endl;
 
     if(controller_->row_buf_policy_==RowBufPolicy::DPM){
         for(int i=0;i<num_queues_;i++){
