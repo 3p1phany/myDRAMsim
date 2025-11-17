@@ -92,9 +92,15 @@ Command BankState::GetReadyCommand(const Command& cmd, uint64_t clk) const {
 
     if (required_type != CommandType::SIZE) {
         if (clk >= cmd_timing_[static_cast<int>(required_type)]) {
-            new_cmd.hex_addr = config_.GetHexAddress(new_cmd.addr);
-            return Command(required_type, new_cmd.addr, new_cmd.hex_addr, 
-                            (required_type == CommandType::ACTIVATE));
+            if(required_type==CommandType::PRECHARGE){
+                new_cmd.hex_addr = config_.GetHexAddress(new_cmd.addr);
+                return Command(required_type, new_cmd.addr, new_cmd.hex_addr, (required_type == CommandType::ACTIVATE));
+            }
+            else{
+                //do not disturb read/write's hex_addr...
+                //hex_addr is served as ID of these demanding requests
+                return Command(required_type, cmd.addr, cmd.hex_addr, (required_type == CommandType::ACTIVATE));
+            }
         }
     }
     return Command();
