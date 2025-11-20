@@ -40,6 +40,7 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
 
     total_command_count_.resize(num_queues_);
     true_row_hit_count_.resize(num_queues_);
+    demand_row_hit_count_.resize(num_queues_);
     row_buf_policy_.resize(num_queues_);
     //page_policy init for every bank
     for(auto& pp:row_buf_policy_){
@@ -133,14 +134,18 @@ void CommandQueue::ArbitratePagePolicy(){
     if((clk_%1000 !=0) || clk_ <1000){
         return; 
     }
-    //std::cout<<"true row hit count:"<<std::endl;
-    //std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
-    //std::cout << std::endl;
-    //std::cout<<"total command count:"<<std::endl;
-    //std::copy(total_command_count_.begin(), total_command_count_.end(), std::ostream_iterator<int>(std::cout, " "));
-    //std::cout << std::endl;
 
     if(controller_->row_buf_policy_==RowBufPolicy::DPM){
+        std::cout<<"true row hit count:"<<std::endl;
+        std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+        std::cout << std::endl;
+        std::cout<<"demand row hit count:"<<std::endl;
+        std::copy(demand_row_hit_count_.begin(), demand_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+        std::cout << std::endl;
+        std::cout<<"total command count:"<<std::endl;
+        std::copy(total_command_count_.begin(), total_command_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+        std::cout << std::endl;
+
         for(int i=0;i<num_queues_;i++){
             if(row_buf_policy_[i]==RowBufPolicy::OPEN_PAGE){
                 // a/b < 0.25
@@ -188,7 +193,19 @@ void CommandQueue::ArbitratePagePolicy(){
             }
 
         }
+
+        std::cout << "row buf policy: ";
+        for(int i = 0; i < num_queues_; i++){
+            if(row_buf_policy_[i] == RowBufPolicy::OPEN_PAGE){
+                std::cout << "O "; 
+            }
+            else {
+                std::cout << "# "; 
+            }
+        }
+        std::cout << std::endl;
     } 
+
 }
 Command CommandQueue::FinishRefresh() {
     // we can do something fancy here like clearing the R/Ws
@@ -210,6 +227,7 @@ Command CommandQueue::FinishRefresh() {
             victim_cmds_[i].clear();
             total_command_count_[i]=0;
             true_row_hit_count_[i]=0;
+            demand_row_hit_count_[i]=0;
         }
         ref_q_indices_.clear();
         is_in_ref_ = false;
@@ -342,6 +360,7 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
                 cmd_it->induced_precharge = false;
             } else {
                 true_row_hit=true;
+                demand_row_hit_count_[queue_idx_]++;
             }
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {

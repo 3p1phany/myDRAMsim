@@ -31,6 +31,8 @@ class CommandQueue {
     std::vector<CMDQueue> victim_cmds_;
     //row hit r/w command count issued in every schedule interval, including those targeting victim commands
     std::vector<int> true_row_hit_count_;
+    // hit open row count
+    std::vector<int> demand_row_hit_count_;
     //total r/w command count issued in every schedule interval
     std::vector<int> total_command_count_;
     //reserve for dpm 
