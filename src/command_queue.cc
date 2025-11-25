@@ -427,4 +427,19 @@ bool CommandQueue::HasRWDependency(const CMDIterator& cmd_it,
     return false;
 }
 
+void CommandQueue::ClockTick() {
+    clk_ += 1;
+    ArbitratePagePolicy();
+
+    int max_len = 0;
+    for (const auto& queue : victim_cmds_) {
+        int len = queue.size();
+        simple_stats_.AddValue("victim_queue_len", len);
+        if (len > max_len) {
+            max_len = len;
+        }
+    }
+    simple_stats_.AddValue("max_victim_queue_len", max_len);
+}
+
 }  // namespace dramsim3
