@@ -20,7 +20,7 @@ class CommandQueue {
     Command GetCommandToIssue();
     Command FinishRefresh();
     void ArbitratePagePolicy();
-    void ClockTick() { clk_ += 1;ArbitratePagePolicy();};
+    void ClockTick();
     bool WillAcceptCommand(int rank, int bankgroup, int bank) const;
     bool AddCommand(Command cmd);
     bool QueueEmpty() const;

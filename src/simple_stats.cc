@@ -66,6 +66,8 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     InitHistoStat("write_latency", "Write cmd latency (cycles)", 0, 200, 10);
     InitHistoStat("interarrival_latency",
                   "Request interarrival latency (cycles)", 0, 100, 10);
+    InitHistoStat("victim_queue_len", "Victim Queue Length", 0, 100, 20);
+    InitHistoStat("max_victim_queue_len", "Max Victim Queue Length per Tick", 0, 100, 20);
 
     // some irregular stats
     InitStat("average_bandwidth", "calculated", "Average bandwidth");
