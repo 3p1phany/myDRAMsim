@@ -16,7 +16,10 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
       config_(config),
       simple_stats_(config_, channel_id_),
       channel_state_(config, timing),
-      cmd_queue_(channel_id_, config, channel_state_, simple_stats_,this),
+      cmd_queue_(channel_id_, config, channel_state_, simple_stats_,(config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
+                      config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
+                      config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
+                      config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
       refresh_(config, channel_state_),
 #ifdef THERMAL
       thermal_calc_(thermal_calc),
