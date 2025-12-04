@@ -7,18 +7,16 @@
 #include "common.h"
 #include "configuration.h"
 #include "simple_stats.h"
-
 namespace dramsim3 {
 
-class Controller;
 using CMDIterator = std::vector<Command>::iterator;
 using CMDQueue = std::vector<Command>;
 enum class QueueStructure { PER_RANK, PER_BANK, SIZE };
-
+class Controller;
 class CommandQueue {
    public:
     CommandQueue(int channel_id, const Config& config,
-                 const ChannelState& channel_state, SimpleStats& simple_stats,const Controller* controller);
+                 const ChannelState& channel_state, SimpleStats& simple_stats,RowBufPolicy top_row_buf_policy,Controller* controller);
     Command GetCommandToIssue();
     Command FinishRefresh();
     void ArbitratePagePolicy();
@@ -37,6 +35,8 @@ class CommandQueue {
     std::vector<int> total_command_count_;
     //reserve for dpm 
     std::vector<RowBufPolicy> row_buf_policy_;
+    RowBufPolicy top_row_buf_policy_;
+    Controller* controller_;
    private:
     bool ArbitratePrecharge(const CMDIterator& cmd_it,
                             const CMDQueue& queue) const;
@@ -66,8 +66,6 @@ class CommandQueue {
     size_t queue_size_;
     int queue_idx_;
     uint64_t clk_;
-    //
-    const Controller* controller_;
 
 
 };

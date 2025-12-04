@@ -6,8 +6,9 @@ namespace dramsim3 {
 
 CommandQueue::CommandQueue(int channel_id, const Config& config,
                            const ChannelState& channel_state,
-                           SimpleStats& simple_stats,const Controller* controller)
+                           SimpleStats& simple_stats,RowBufPolicy top_row_buf_policy_,Controller* controller)
     : rank_q_empty(config.ranks, true),
+      top_row_buf_policy_(top_row_buf_policy_),
       controller_(controller),
       config_(config),
       channel_state_(channel_state),
@@ -44,19 +45,22 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     row_buf_policy_.resize(num_queues_);
     //page_policy init for every bank
     for(auto& pp:row_buf_policy_){
-        if(controller_->row_buf_policy_==RowBufPolicy::CLOSE_PAGE){
+        if(this->top_row_buf_policy_==RowBufPolicy::CLOSE_PAGE){
             pp=RowBufPolicy::CLOSE_PAGE;
         }
-        else if(controller_->row_buf_policy_==RowBufPolicy::OPEN_PAGE){
+        else if(this->top_row_buf_policy_==RowBufPolicy::OPEN_PAGE){
             pp=RowBufPolicy::OPEN_PAGE;
         }
-        else if(controller_->row_buf_policy_==RowBufPolicy::SMART_CLOSE){
+        else if(this->top_row_buf_policy_==RowBufPolicy::SMART_CLOSE){
             pp=RowBufPolicy::SMART_CLOSE;
         }
-        else if(controller_->row_buf_policy_==RowBufPolicy::DPM){
+        else if(this->top_row_buf_policy_==RowBufPolicy::DPM){
             pp=RowBufPolicy::OPEN_PAGE;
         }
     }
+    //for(auto& pp: row_buf_policy_){
+    //    std::cout<<static_cast<int>(pp)<<std::endl;
+    //}
     //bank_sm
     bank_sm.resize(num_queues_);
     for(auto& sm: bank_sm){
@@ -79,9 +83,9 @@ Command CommandQueue::GetCommandToIssue() {
                 bool autoPRE_added = false;
                 //row hit count in command queue
                 int row_hit_count=0;
-                //check command queue for row hit cmds
-                row_hit_count += std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Row() == cmd.Row() && x.IsWrite();});
-                //check transaction buffer
+                row_hit_count += std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Row() == cmd.Row() ;});
+
+                if(cmd.IsWrite()){
                 const auto& WB = controller_->write_buffer();
                 for(const auto& it:WB){
                     Command cmd_it= controller_ -> TransToCommand(it);
@@ -93,8 +97,8 @@ Command CommandQueue::GetCommandToIssue() {
                        queue.size() < queue_size_)
                     row_hit_count ++;
                 }
-
-                row_hit_count += std::count_if(queue.begin(),queue.end(),[&cmd](Command x){return x.Row() == cmd.Row() && x.IsRead();});
+                }
+                if(cmd.IsRead()){
                 const auto& RQ = controller_->read_queue();
                 for(const auto& it:RQ){
                     Command cmd_it= controller_ -> TransToCommand(it);
@@ -106,11 +110,13 @@ Command CommandQueue::GetCommandToIssue() {
                        queue.size() < queue_size_)
                     row_hit_count ++;
                 }
+                }
 
                 //end of row hit command cluster
                 //strong indicator of autoPRE!!!
                 if(row_buf_policy_[queue_idx_] == RowBufPolicy::SMART_CLOSE){
                     if(row_hit_count==1){
+           //             std::cout<<"autoPRE added"<<std::endl;
                         cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
                                        cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
                         autoPRE_added=true;
@@ -135,7 +141,7 @@ void CommandQueue::ArbitratePagePolicy(){
         return; 
     }
 
-    if(controller_->row_buf_policy_==RowBufPolicy::DPM){
+    if(this->top_row_buf_policy_==RowBufPolicy::DPM){
         std::cout<<"true row hit count:"<<std::endl;
         std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
         std::cout << std::endl;
