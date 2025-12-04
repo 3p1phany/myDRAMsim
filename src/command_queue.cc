@@ -142,15 +142,15 @@ void CommandQueue::ArbitratePagePolicy(){
     }
 
     if(this->top_row_buf_policy_==RowBufPolicy::DPM){
-        std::cout<<"true row hit count:"<<std::endl;
-        std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
-        std::cout << std::endl;
-        std::cout<<"demand row hit count:"<<std::endl;
-        std::copy(demand_row_hit_count_.begin(), demand_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
-        std::cout << std::endl;
-        std::cout<<"total command count:"<<std::endl;
-        std::copy(total_command_count_.begin(), total_command_count_.end(), std::ostream_iterator<int>(std::cout, " "));
-        std::cout << std::endl;
+        //std::cout<<"true row hit count:"<<std::endl;
+        //std::copy(true_row_hit_count_.begin(), true_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+        //std::cout << std::endl;
+        //std::cout<<"demand row hit count:"<<std::endl;
+        //std::copy(demand_row_hit_count_.begin(), demand_row_hit_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+        //std::cout << std::endl;
+        //std::cout<<"total command count:"<<std::endl;
+        //std::copy(total_command_count_.begin(), total_command_count_.end(), std::ostream_iterator<int>(std::cout, " "));
+        //std::cout << std::endl;
 
         for(int i=0;i<num_queues_;i++){
             if(row_buf_policy_[i]==RowBufPolicy::OPEN_PAGE){
@@ -200,16 +200,16 @@ void CommandQueue::ArbitratePagePolicy(){
 
         }
 
-        std::cout << "row buf policy: ";
-        for(int i = 0; i < num_queues_; i++){
-            if(row_buf_policy_[i] == RowBufPolicy::OPEN_PAGE){
-                std::cout << "O "; 
-            }
-            else {
-                std::cout << "# "; 
-            }
-        }
-        std::cout << std::endl;
+        //std::cout << "row buf policy: ";
+        //for(int i = 0; i < num_queues_; i++){
+        //    if(row_buf_policy_[i] == RowBufPolicy::OPEN_PAGE){
+        //        std::cout << "O "; 
+        //    }
+        //    else {
+        //        std::cout << "# "; 
+        //    }
+        //}
+        //std::cout << std::endl;
     } 
 
 }
