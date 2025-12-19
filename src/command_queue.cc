@@ -153,6 +153,9 @@ void CommandQueue::ArbitratePagePolicy(){
         //std::cout << std::endl;
 
         for(int i=0;i<num_queues_;i++){
+            if(total_command_count_[i]==0){
+                continue;
+            }
             if(row_buf_policy_[i]==RowBufPolicy::OPEN_PAGE){
                 // a/b < 0.25
                 if(true_row_hit_count_[i]<(total_command_count_[i]>>2)){
@@ -375,11 +378,11 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             }
             cmd_it->induced_precharge = true;
             //check victim_cmds to verify whether cmd_it can be a possible row hit  
-            for(auto& v:victim_cmds_[queue_idx_]){
-                if(v.Row() == cmd_it->Row()){
-                    true_row_hit=true;
-                }
-            }
+           // for(auto& v:victim_cmds_[queue_idx_]){
+           //     if(v.Row() == cmd_it->Row()){
+           //         true_row_hit=true;
+           //     }
+           // }
             //if precharge occurs, it means switching rows
             victim_cmds_[queue_idx_].push_back(cmd);
         } 
