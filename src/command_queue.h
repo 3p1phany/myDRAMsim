@@ -55,6 +55,9 @@ class CommandQueue {
     const ChannelState& channel_state_;
     SimpleStats& simple_stats_;
 
+    //  per bank timeout values
+    //  50/100/150/200/300/400/800 
+    std::vector<int> timeout_counters_;
     std::vector<CMDQueue> queues_;
     std::vector<int> bank_sm;
 

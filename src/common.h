@@ -7,7 +7,7 @@
 
 namespace dramsim3 {
 
-enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE,ORACLE,SMART_CLOSE,DPM,SIZE };
+enum class RowBufPolicy { OPEN_PAGE, CLOSE_PAGE,ORACLE,SMART_CLOSE,DPM,GS,SIZE };
 struct Address {
     Address()
         : channel(-1), rank(-1), bankgroup(-1), bank(-1), row(-1), column(-1) {}
