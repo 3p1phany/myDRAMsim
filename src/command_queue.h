@@ -37,7 +37,6 @@ class CommandQueue {
     std::vector<RowBufPolicy> row_buf_policy_;
     RowBufPolicy top_row_buf_policy_;
     Controller* controller_;
-   private:
     bool ArbitratePrecharge(const CMDIterator& cmd_it,
                             const CMDQueue& queue) const;
     bool HasRWDependency(const CMDIterator& cmd_it,
@@ -55,9 +54,9 @@ class CommandQueue {
     const ChannelState& channel_state_;
     SimpleStats& simple_stats_;
 
-    //  per bank timeout values
-    //  50/100/150/200/300/400/800 
-    std::vector<int> timeout_counters_;
+    std::vector<Command> issued_cmd;
+    std::vector<int> timeout_counter;
+    std::vector<char> timeout_ticking;
     std::vector<CMDQueue> queues_;
     std::vector<int> bank_sm;
 

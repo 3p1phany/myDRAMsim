@@ -37,7 +37,6 @@ class ChannelState {
 
     std::vector<int> rank_idle_cycles;
 
-   private:
     const Config& config_;
     const Timing& timing_;
 

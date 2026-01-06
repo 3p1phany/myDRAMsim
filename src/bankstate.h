@@ -26,7 +26,6 @@ class BankState {
     int OpenRow() const { return open_row_; }
     int RowHitCount() const { return row_hit_count_; }
 
-   private:
     // Current state of the Bank
     // Apriori or instantaneously transitions on a command.
     State state_;

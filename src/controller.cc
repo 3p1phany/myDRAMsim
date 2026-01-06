@@ -123,6 +123,28 @@ void Controller::ClockTick() {
             }
         }
     }
+    else if(row_buf_policy_==RowBufPolicy::GS){ //GS policy timeout handling, can not issue timeout precharge when there is command issued
+        //decrease timeout counter for each bank
+        for(int i=0;i<cmd_queue_.num_queues_;i++){
+            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]>0){
+                cmd_queue_.timeout_counter[i]--;
+            }
+            //timeout reached, issue precharge
+            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]==0){
+                cmd_queue_.timeout_ticking[i]=false;
+                cmd_queue_.timeout_counter[i]=100;
+                //send precharge command to close the open row
+                auto cmd = cmd_queue_.issued_cmd[i];
+                cmd.cmd_type=CommandType::PRECHARGE;
+                //check sending precharge timing is ok
+                auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
+                if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
+                    IssueCommand(cmd);
+                } 
+            }
+        }
+    }
+
 
     // power updates pt 1
     for (int i = 0; i < config_.ranks; i++) {

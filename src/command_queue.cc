@@ -66,6 +66,21 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     for(auto& sm: bank_sm){
         sm=3;
     }
+    //timeout counter init
+    timeout_counter.resize(num_queues_);
+    for(auto& tc: timeout_counter){
+        tc=100;
+    }
+    //timeout ticking init
+    timeout_ticking.resize(num_queues_);
+    for(auto& tt: timeout_ticking){
+        tt=false;
+    }
+    //issued cmd init
+    issued_cmd.reserve(num_queues_);
+    for(auto& ic: issued_cmd){
+        ic=Command();
+    }
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -113,13 +128,17 @@ Command CommandQueue::GetCommandToIssue() {
                 }
 
                 //end of row hit command cluster
-                //strong indicator of autoPRE!!!
-                if(row_buf_policy_[queue_idx_] == RowBufPolicy::SMART_CLOSE){
-                    if(row_hit_count==1){
-           //             std::cout<<"autoPRE added"<<std::endl;
+                if(row_hit_count==1){
+                    if(row_buf_policy_[queue_idx_] == RowBufPolicy::SMART_CLOSE){
                         cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
                                        cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
                         autoPRE_added=true;
+                    }
+                    else if(top_row_buf_policy_==RowBufPolicy::GS){
+                        //clock starts ticking 
+                        timeout_ticking[queue_idx_]=true;
+                        timeout_counter[queue_idx_]=100;
+                        issued_cmd[queue_idx_]=cmd;
                     }
                 }
 
@@ -299,6 +318,25 @@ bool CommandQueue::AddCommand(Command cmd) {
     if (queue.size() < queue_size_) {
         queue.push_back(cmd);
         rank_q_empty[cmd.Rank()] = false;
+
+        if(top_row_buf_policy_==RowBufPolicy::GS){
+            //whenever a new command comes, reset the timeout ticking for this bank
+            int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
+            // timeout clock is still ticking, and a new command arrives
+            if(timeout_ticking[index] && timeout_counter[index]>0){
+                if(cmd.Row() != issued_cmd[index].Row()){
+                    //down to zero immediately
+                    timeout_counter[index]=0;
+                }
+                else{
+                    //reset timeout counter if a row hit command arrives
+                    timeout_counter[index]=100;
+                    timeout_ticking[index]=false;
+                }
+            }
+        }
+
+
         return true;
     } else {
         int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
