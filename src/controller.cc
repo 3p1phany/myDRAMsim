@@ -131,14 +131,14 @@ void Controller::ClockTick() {
             }
             //timeout reached, issue precharge
             if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]==0){
-                cmd_queue_.timeout_ticking[i]=false;
-                cmd_queue_.timeout_counter[i]=100;
-                //send precharge command to close the open row
+                //try to send precharge command to close the open row
                 auto cmd = cmd_queue_.issued_cmd[i];
                 cmd.cmd_type=CommandType::PRECHARGE;
                 //check sending precharge timing is ok
                 auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
                 if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
+                    cmd_queue_.timeout_ticking[i]=false;
+                    cmd_queue_.timeout_counter[i]=100;
                     IssueCommand(cmd);
                 } 
             }

@@ -77,7 +77,7 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         tt=false;
     }
     //issued cmd init
-    issued_cmd.reserve(num_queues_);
+    issued_cmd.resize(num_queues_);
     for(auto& ic: issued_cmd){
         ic=Command();
     }
