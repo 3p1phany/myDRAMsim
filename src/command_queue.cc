@@ -136,9 +136,12 @@ Command CommandQueue::GetCommandToIssue() {
                     }
                     else if(top_row_buf_policy_==RowBufPolicy::GS){
                         //clock starts ticking 
-                        timeout_ticking[queue_idx_]=true;
-                        timeout_counter[queue_idx_]=100;
-                        issued_cmd[queue_idx_]=cmd;
+                        //do not block other row conflicting request if they are already in the queue
+                        if(queues_[queue_idx_].size()==1){
+                            timeout_ticking[queue_idx_]=true;
+                            timeout_counter[queue_idx_]=100;
+                            issued_cmd[queue_idx_]=cmd;
+                        }
                     }
                 }
 
