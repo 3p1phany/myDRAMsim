@@ -1,7 +1,9 @@
 #ifndef __DRAM_SYSTEM_H
 #define __DRAM_SYSTEM_H
 
+#include <array>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -29,7 +31,7 @@ class BaseDRAMSystem {
                                                 uint64_t,
                                                 uint64_t)> act_callback);
     void PrintEpochStats();
-    void PrintStats();
+    virtual void PrintStats();
     void ResetStats();
 
     virtual bool WillAcceptTransaction(uint64_t hex_addr,
@@ -73,6 +75,25 @@ class JedecDRAMSystem : public BaseDRAMSystem {
     bool WillAcceptTransaction(uint64_t hex_addr, bool is_write) const override;
     bool AddTransaction(uint64_t hex_addr, bool is_write) override;
     void ClockTick() override;
+    void PrintStats() override;
+
+   private:
+    // Row hit distance statistics
+    static constexpr size_t MAX_ROW_HISTORY = 64;
+    struct RowAccessRecord {
+        int row;
+        uint64_t timestamp;
+    };
+    struct BankRowHistory {
+        std::array<RowAccessRecord, MAX_ROW_HISTORY> records;
+        size_t head = 0;   // next write position
+        size_t count = 0;  // valid record count
+    };
+    std::vector<BankRowHistory> row_history_;  // indexed by bank
+    std::map<int, uint64_t> row_hit_distance_histogram_;
+    int GetBankIndex(int channel, int rank, int bankgroup, int bank) const;
+    void RecordRowAccess(int bank_idx, int row, uint64_t timestamp);
+    void PrintRowHitDistanceStats() const;
 };
 
 // Model a memorysystem with an infinite bandwidth and a fixed latency (possibly

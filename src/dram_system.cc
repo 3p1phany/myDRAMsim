@@ -119,6 +119,10 @@ JedecDRAMSystem::JedecDRAMSystem(Config &config, const std::string &output_dir,
         ctrls_.push_back(new Controller(i, config_, timing_));
 #endif  // THERMAL
     }
+
+    // Initialize row history for all banks across all channels
+    int total_banks = config_.channels * config_.ranks * config_.banks;
+    row_history_.resize(total_banks);
 }
 
 JedecDRAMSystem::~JedecDRAMSystem() {
@@ -145,6 +149,24 @@ bool JedecDRAMSystem::AddTransaction(uint64_t hex_addr, bool is_write) {
 
     assert(ok);
     if (ok) {
+        // Row hit distance statistics
+        Address addr = config_.AddressMapping(hex_addr);
+        int bank_idx = GetBankIndex(channel, addr.rank, addr.bankgroup, addr.bank);
+        int current_row = addr.row;
+
+        // Check for row hits in history
+        auto& history = row_history_[bank_idx];
+        for (size_t i = 0; i < history.count; i++) {
+            const auto& record = history.records[i];
+            if (record.row == current_row) {
+                int distance = static_cast<int>(clk_ - record.timestamp);
+                row_hit_distance_histogram_[distance]++;
+            }
+        }
+
+        // Record current access
+        RecordRowAccess(bank_idx, current_row, clk_);
+
         Transaction trans = Transaction(hex_addr, is_write);
         ctrls_[channel]->AddTransaction(trans);
     }
@@ -185,6 +207,65 @@ void JedecDRAMSystem::ClockTick() {
         PrintEpochStats();
     }
     return;
+}
+
+void JedecDRAMSystem::PrintStats() {
+    // Call base class PrintStats
+    BaseDRAMSystem::PrintStats();
+    // Append row hit distance statistics
+    PrintRowHitDistanceStats();
+}
+
+int JedecDRAMSystem::GetBankIndex(int channel, int rank, int bankgroup, int bank) const {
+    return channel * (config_.ranks * config_.banks) +
+           rank * config_.banks +
+           bankgroup * config_.banks_per_group + bank;
+}
+
+void JedecDRAMSystem::RecordRowAccess(int bank_idx, int row, uint64_t timestamp) {
+    auto& history = row_history_[bank_idx];
+    
+    // Check if this row already exists in history, if so just update timestamp
+    for (size_t i = 0; i < history.count; i++) {
+        if (history.records[i].row == row) {
+            history.records[i].timestamp = timestamp;
+            return;
+        }
+    }
+    
+    // Row not found, add new entry
+    history.records[history.head] = {row, timestamp};
+    history.head = (history.head + 1) % MAX_ROW_HISTORY;
+    if (history.count < MAX_ROW_HISTORY) {
+        history.count++;
+    }
+}
+
+void JedecDRAMSystem::PrintRowHitDistanceStats() const {
+    std::ofstream out(config_.txt_stats_name, std::ofstream::app);
+    out << "\n###########################################\n";
+    out << "## Row Hit Distance Distribution\n";
+    out << "###########################################\n";
+
+    // Aggregate into bins (bin_width = 100 cycles)
+    std::map<int, uint64_t> binned_histogram;
+    int bin_width = 100;
+    for (const auto& pair : row_hit_distance_histogram_) {
+        int distance = pair.first;
+        uint64_t count = pair.second;
+        int bin = (distance / bin_width) * bin_width;
+        binned_histogram[bin] += count;
+    }
+
+    uint64_t total_hits = 0;
+    for (const auto& pair : binned_histogram) {
+        int bin = pair.first;
+        uint64_t count = pair.second;
+        out << "distance[" << bin << "-" << (bin + bin_width - 1) << "]: " << count << "\n";
+        total_hits += count;
+    }
+    out << "total_row_hits: " << total_hits << "\n";
+    out.close();
 }
 
 IdealDRAMSystem::IdealDRAMSystem(Config &config, const std::string &output_dir,
