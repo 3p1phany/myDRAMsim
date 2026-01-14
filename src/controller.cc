@@ -137,10 +137,21 @@ void Controller::ClockTick() {
                 //check sending precharge timing is ok
                 auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
                 if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
+                    // Row Exclusion check: if row is in exclusion store, delay precharge
+                    if (cmd_queue_.RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), cmd.Row())) {
+                        // Extend timeout, wait for next evaluation
+                        // Use a shorter extension to avoid indefinite delay
+                        cmd_queue_.timeout_counter[i] = cmd_queue_.GetCurrentTimeout(i);
+                        continue;  // Skip precharge for now
+                    }
+
+                    // Mark this row as closed by timeout (for Row Exclusion detection)
+                    cmd_queue_.re_detect_state_[i].prev_closed_by_timeout = true;
+
                     cmd_queue_.timeout_ticking[i]=false;
-                    cmd_queue_.timeout_counter[i]=100;
+                    cmd_queue_.timeout_counter[i]=cmd_queue_.GetCurrentTimeout(i);  // Use dynamic timeout
                     IssueCommand(cmd);
-                } 
+                }
             }
         }
     }

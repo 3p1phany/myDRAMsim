@@ -81,6 +81,14 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     for(auto& ic: issued_cmd){
         ic=Command();
     }
+
+    // ===== GS Shadow State Init =====
+    gs_shadow_state_.resize(num_queues_);
+    // Default values are set by struct initialization
+
+    // ===== Row Exclusion State Init =====
+    re_detect_state_.resize(num_queues_);
+    // row_exclusion_store_ is already empty (deque default)
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -135,11 +143,11 @@ Command CommandQueue::GetCommandToIssue() {
                         autoPRE_added=true;
                     }
                     else if(top_row_buf_policy_==RowBufPolicy::GS){
-                        //clock starts ticking 
+                        //clock starts ticking
                         //do not block other row conflicting request if they are already in the queue
                         if(queues_[queue_idx_].size()==1){
                             timeout_ticking[queue_idx_]=true;
-                            timeout_counter[queue_idx_]=100;
+                            timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);  // Use dynamic timeout
                             issued_cmd[queue_idx_]=cmd;
                         }
                     }
@@ -325,15 +333,23 @@ bool CommandQueue::AddCommand(Command cmd) {
         if(top_row_buf_policy_==RowBufPolicy::GS){
             //whenever a new command comes, reset the timeout ticking for this bank
             int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
+
+            // Row Exclusion Detection: check if this is a long-lived row
+            RE_DetectLongLivedRow(index, cmd);
+
             // timeout clock is still ticking, and a new command arrives
             if(timeout_ticking[index] && timeout_counter[index]>0){
                 if(cmd.Row() != issued_cmd[index].Row()){
+                    // Row conflict: check if row exclusion entry should be marked as causing conflict
+                    if (RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row())) {
+                        RE_MarkConflict(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row());
+                    }
                     //down to zero immediately
                     timeout_counter[index]=0;
                 }
                 else{
-                    //reset timeout counter if a row hit command arrives
-                    timeout_counter[index]=100;
+                    //reset timeout counter if a row hit command arrives (use dynamic timeout)
+                    timeout_counter[index]=GetCurrentTimeout(index);
                     timeout_ticking[index]=false;
                 }
             }
@@ -412,13 +428,24 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
                 true_row_hit=true;
                 demand_row_hit_count_[queue_idx_]++;
             }
+
+            // GS: Process CAS command for shadow simulation
+            if (top_row_buf_policy_ == RowBufPolicy::GS) {
+                GS_ProcessCAS(queue_idx_, clk_);
+            }
+        }
+        else if (cmd.cmd_type == CommandType::ACTIVATE) {
+            // GS: Process ACT command for shadow simulation
+            if (top_row_buf_policy_ == RowBufPolicy::GS) {
+                GS_ProcessACT(queue_idx_, cmd.Row(), clk_);
+            }
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {
             if (!ArbitratePrecharge(cmd_it, queue)) {
                 continue;
             }
             cmd_it->induced_precharge = true;
-            //check victim_cmds to verify whether cmd_it can be a possible row hit  
+            //check victim_cmds to verify whether cmd_it can be a possible row hit
            // for(auto& v:victim_cmds_[queue_idx_]){
            //     if(v.Row() == cmd_it->Row()){
            //         true_row_hit=true;
@@ -426,7 +453,7 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
            // }
             //if precharge occurs, it means switching rows
             victim_cmds_[queue_idx_].push_back(cmd);
-        } 
+        }
 
         if(true_row_hit){
             true_row_hit_count_[queue_idx_]++;
@@ -490,6 +517,214 @@ void CommandQueue::ClockTick() {
             }
         }
         simple_stats_.AddValue("max_victim_queue_len", max_len);
+    }
+    // GS timeout arbitration
+    if(top_row_buf_policy_==RowBufPolicy::GS){
+        GS_ArbitrateTimeout();
+    }
+}
+
+// ===== GS Timeout Update Functions =====
+
+void CommandQueue::GetBankFromIndex(int queue_idx, int& rank, int& bankgroup, int& bank) const {
+    if (queue_structure_ == QueueStructure::PER_RANK) {
+        rank = queue_idx;
+        bankgroup = 0;
+        bank = 0;
+    } else {
+        rank = queue_idx / config_.banks;
+        int remainder = queue_idx % config_.banks;
+        bankgroup = remainder / config_.banks_per_group;
+        bank = remainder % config_.banks_per_group;
+    }
+}
+
+int CommandQueue::GetCurrentTimeout(int queue_idx) const {
+    return GS_TIMEOUT_VALUES[gs_shadow_state_[queue_idx].curr_timeout_idx];
+}
+
+void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle) {
+    auto& state = gs_shadow_state_[queue_idx];
+
+    // Get current open row for this bank
+    int rank, bankgroup, bank;
+    GetBankFromIndex(queue_idx, rank, bankgroup, bank);
+
+    for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
+        int timeout_val = GS_TIMEOUT_VALUES[t];
+
+        // Case 1: Accessing a different row (potential row conflict)
+        if (state.prev_open_row != -1 && state.prev_open_row != new_row) {
+            // (CurrCycle - tRP - LastCASCycle) < timeout means conflict due to timeout too long
+            int64_t gap = static_cast<int64_t>(curr_cycle) - config_.tRP - static_cast<int64_t>(state.last_cas_cycle);
+            if (gap < timeout_val) {
+                state.next_cas_state[t] = GSShadowState::NextCASState::CONFLICT;
+            } else {
+                state.next_cas_state[t] = GSShadowState::NextCASState::MISS;
+            }
+        }
+        // Case 2: Accessing the same row (potential miss to hit conversion)
+        else if (state.prev_open_row != -1 && state.prev_open_row == new_row) {
+            // (CurrCycle - LastCASCycle) < timeout means could have been a hit
+            int64_t gap = static_cast<int64_t>(curr_cycle) - static_cast<int64_t>(state.last_cas_cycle);
+            if (gap < timeout_val) {
+                state.next_cas_state[t] = GSShadowState::NextCASState::HIT;
+            } else {
+                state.next_cas_state[t] = GSShadowState::NextCASState::MISS;
+            }
+        }
+        // Case 3: First access (prev_open_row == -1), treat as MISS
+        else {
+            state.next_cas_state[t] = GSShadowState::NextCASState::MISS;
+        }
+    }
+
+    // Update prev_open_row to the newly activated row
+    state.prev_open_row = new_row;
+}
+
+void CommandQueue::GS_ProcessCAS(int queue_idx, uint64_t curr_cycle) {
+    auto& state = gs_shadow_state_[queue_idx];
+    int curr_timeout_idx = state.curr_timeout_idx;
+
+    for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
+        int timeout_val = GS_TIMEOUT_VALUES[t];
+
+        if (state.next_cas_state[t] == GSShadowState::NextCASState::CONFLICT) {
+            state.conflicts[t]++;
+        }
+        else if (state.next_cas_state[t] == GSShadowState::NextCASState::HIT) {
+            // Only count as hit if this timeout setting would actually preserve the hit
+            if (t >= curr_timeout_idx) {
+                // Larger or equal timeout would keep row open longer
+                state.hits[t]++;
+            }
+            else {
+                // Smaller timeout: verify the interval is truly within this timeout
+                int64_t gap = static_cast<int64_t>(curr_cycle) - static_cast<int64_t>(state.last_cas_cycle);
+                if (gap < timeout_val) {
+                    state.hits[t]++;
+                }
+            }
+        }
+        // MISS and NONE don't contribute to either counter
+
+        // Reset state for next command
+        state.next_cas_state[t] = GSShadowState::NextCASState::NONE;
+    }
+
+    // Update last_cas_cycle
+    state.last_cas_cycle = curr_cycle;
+}
+
+void CommandQueue::GS_ArbitrateTimeout() {
+    // Only arbitrate at specific intervals
+    if (clk_ % GS_ARBITRATION_PERIOD != 0 || clk_ < GS_ARBITRATION_PERIOD) {
+        return;
+    }
+
+    for (int q = 0; q < num_queues_; q++) {
+        auto& state = gs_shadow_state_[q];
+        int curr_idx = state.curr_timeout_idx;
+
+        int best_idx = curr_idx;
+        int best_gain = 0;  // hitsIncr - conflictsIncr
+
+        for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
+            int hits_incr = state.hits[t] - state.hits[curr_idx];
+            int conflicts_incr = state.conflicts[t] - state.conflicts[curr_idx];
+            int gain = hits_incr - conflicts_incr;
+
+            if (gain > best_gain) {
+                best_gain = gain;
+                best_idx = t;
+            }
+        }
+
+        // Only update if variation is substantial
+        if (best_gain > GS_VARIATION_THRESHOLD && best_idx != curr_idx) {
+            state.curr_timeout_idx = best_idx;
+            // Note: The actual timeout_counter will use this new value when next timeout starts
+        }
+
+        // Reset statistics for next arbitration period
+        for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
+            state.hits[t] = 0;
+            state.conflicts[t] = 0;
+        }
+    }
+}
+
+// ===== Row Exclusion Functions =====
+
+void CommandQueue::RE_DetectLongLivedRow(int queue_idx, const Command& cmd) {
+    auto& detect = re_detect_state_[queue_idx];
+
+    // If previous row was closed by timeout and new request accesses the same row
+    // This indicates the row is a "long-lived row" that benefits from staying open
+    if (detect.prev_closed_by_timeout && detect.prev_row == cmd.Row()) {
+        RowExclusionEntry entry;
+        entry.rank = cmd.Rank();
+        entry.bankgroup = cmd.Bankgroup();
+        entry.bank = cmd.Bank();
+        entry.row = cmd.Row();
+        entry.caused_conflict = false;
+
+        RE_AddEntry(entry);
+    }
+
+    // Update detection state
+    detect.prev_row = cmd.Row();
+    detect.prev_closed_by_timeout = false;
+}
+
+void CommandQueue::RE_AddEntry(const RowExclusionEntry& entry) {
+    // Check if entry already exists
+    for (const auto& e : row_exclusion_store_) {
+        if (e == entry) {
+            return;  // Already exists, don't add duplicate
+        }
+    }
+
+    // If at capacity, remove front entry (FIFO, caused_conflict entries moved to front)
+    if (row_exclusion_store_.size() >= static_cast<size_t>(ROW_EXCLUSION_CAPACITY)) {
+        row_exclusion_store_.pop_front();
+    }
+
+    row_exclusion_store_.push_back(entry);
+}
+
+bool CommandQueue::RE_IsInStore(int rank, int bankgroup, int bank, int row) const {
+    for (const auto& entry : row_exclusion_store_) {
+        if (entry.rank == rank && entry.bankgroup == bankgroup &&
+            entry.bank == bank && entry.row == row) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void CommandQueue::RE_MarkConflict(int rank, int bankgroup, int bank, int row) {
+    for (auto it = row_exclusion_store_.begin(); it != row_exclusion_store_.end(); ++it) {
+        if (it->rank == rank && it->bankgroup == bankgroup &&
+            it->bank == bank && it->row == row) {
+            it->caused_conflict = true;
+            // Move to front for priority replacement
+            RowExclusionEntry entry = *it;
+            row_exclusion_store_.erase(it);
+            row_exclusion_store_.push_front(entry);
+            return;
+        }
+    }
+}
+
+void CommandQueue::RE_RemoveEntry(int rank, int bankgroup, int bank, int row) {
+    for (auto it = row_exclusion_store_.begin(); it != row_exclusion_store_.end(); ++it) {
+        if (it->rank == rank && it->bankgroup == bankgroup &&
+            it->bank == bank && it->row == row) {
+            row_exclusion_store_.erase(it);
+            return;
+        }
     }
 }
 

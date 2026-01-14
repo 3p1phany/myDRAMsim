@@ -3,11 +3,52 @@
 
 #include <unordered_set>
 #include <vector>
+#include <deque>
 #include "channel_state.h"
 #include "common.h"
 #include "configuration.h"
 #include "simple_stats.h"
 namespace dramsim3 {
+
+// ===== GS Timeout Update Constants =====
+static constexpr int GS_TIMEOUT_COUNT = 7;
+static constexpr int GS_TIMEOUT_VALUES[GS_TIMEOUT_COUNT] = {50, 100, 150, 200, 300, 400, 800};
+static constexpr uint64_t GS_ARBITRATION_PERIOD = 30000;
+static constexpr int GS_VARIATION_THRESHOLD = 5;
+
+// Per bank shadow simulation state for timeout update
+struct GSShadowState {
+    int curr_timeout_idx = 1;  // Default 100 cycles (index 1)
+    int hits[GS_TIMEOUT_COUNT] = {0};
+    int conflicts[GS_TIMEOUT_COUNT] = {0};
+
+    enum class NextCASState { NONE, HIT, MISS, CONFLICT };
+    NextCASState next_cas_state[GS_TIMEOUT_COUNT] = {NextCASState::NONE};
+
+    uint64_t last_cas_cycle = 0;
+    int prev_open_row = -1;
+};
+
+// ===== Row Exclusion Constants and Structures =====
+static constexpr int ROW_EXCLUSION_CAPACITY = 64;
+
+struct RowExclusionEntry {
+    int rank;
+    int bankgroup;
+    int bank;
+    int row;
+    bool caused_conflict = false;
+
+    bool operator==(const RowExclusionEntry& other) const {
+        return rank == other.rank && bankgroup == other.bankgroup &&
+               bank == other.bank && row == other.row;
+    }
+};
+
+struct RowExclusionDetectState {
+    int prev_row = -1;
+    bool prev_closed_by_timeout = false;
+};
 
 using CMDIterator = std::vector<Command>::iterator;
 using CMDQueue = std::vector<Command>;
@@ -69,7 +110,26 @@ class CommandQueue {
     int queue_idx_;
     uint64_t clk_;
 
+    // ===== GS Timeout Update Members =====
+    std::vector<GSShadowState> gs_shadow_state_;  // per bank
 
+    // GS Timeout Update functions
+    void GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle);
+    void GS_ProcessCAS(int queue_idx, uint64_t curr_cycle);
+    void GS_ArbitrateTimeout();
+    void GetBankFromIndex(int queue_idx, int& rank, int& bankgroup, int& bank) const;
+    int GetCurrentTimeout(int queue_idx) const;
+
+    // ===== Row Exclusion Members =====
+    std::deque<RowExclusionEntry> row_exclusion_store_;  // per channel, shared by all banks
+    std::vector<RowExclusionDetectState> re_detect_state_;  // per bank
+
+    // Row Exclusion functions
+    void RE_DetectLongLivedRow(int queue_idx, const Command& cmd);
+    void RE_AddEntry(const RowExclusionEntry& entry);
+    bool RE_IsInStore(int rank, int bankgroup, int bank, int row) const;
+    void RE_MarkConflict(int rank, int bankgroup, int bank, int row);
+    void RE_RemoveEntry(int rank, int bankgroup, int bank, int row);
 };
 
 }  // namespace dramsim3
