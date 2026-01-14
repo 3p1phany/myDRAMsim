@@ -1,5 +1,6 @@
 #include "command_queue.h"
 #include <algorithm>
+#include <climits>
 #include "controller.h"
 
 namespace dramsim3 {
@@ -334,13 +335,11 @@ bool CommandQueue::AddCommand(Command cmd) {
             //whenever a new command comes, reset the timeout ticking for this bank
             int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
 
-            // Row Exclusion Detection: check if this is a long-lived row
-            RE_DetectLongLivedRow(index, cmd);
-
             // timeout clock is still ticking, and a new command arrives
             if(timeout_ticking[index] && timeout_counter[index]>0){
                 if(cmd.Row() != issued_cmd[index].Row()){
                     // Row conflict: check if row exclusion entry should be marked as causing conflict
+                    // Paper Section 4.2: track entries that caused conflicts for replacement policy
                     if (RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row())) {
                         RE_MarkConflict(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row());
                     }
@@ -550,6 +549,23 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
     int rank, bankgroup, bank;
     GetBankFromIndex(queue_idx, rank, bankgroup, bank);
 
+    // Row Exclusion Detection (Paper Section 4.2):
+    // "If an activated row is the same as the previous row and was closed due to
+    // the expiration of the timeout window the previous time it was open,
+    // it is placed in a row exclusion store."
+    auto& detect = re_detect_state_[queue_idx];
+    if (detect.prev_closed_by_timeout && detect.prev_row == new_row) {
+        RowExclusionEntry entry;
+        entry.rank = rank;
+        entry.bankgroup = bankgroup;
+        entry.bank = bank;
+        entry.row = new_row;
+        entry.caused_conflict = false;
+        RE_AddEntry(entry);
+    }
+    // Reset detection state after checking
+    detect.prev_closed_by_timeout = false;
+
     for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
         int timeout_val = GS_TIMEOUT_VALUES[t];
 
@@ -627,24 +643,46 @@ void CommandQueue::GS_ArbitrateTimeout() {
         auto& state = gs_shadow_state_[q];
         int curr_idx = state.curr_timeout_idx;
 
+        // Compute hitsIncr - conflictsIncr for all timeout windows
+        int gains[GS_TIMEOUT_COUNT];
+        int max_gain = INT_MIN;
+        int min_gain = INT_MAX;
         int best_idx = curr_idx;
-        int best_gain = 0;  // hitsIncr - conflictsIncr
 
         for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
             int hits_incr = state.hits[t] - state.hits[curr_idx];
             int conflicts_incr = state.conflicts[t] - state.conflicts[curr_idx];
-            int gain = hits_incr - conflicts_incr;
+            gains[t] = hits_incr - conflicts_incr;
 
-            if (gain > best_gain) {
-                best_gain = gain;
+            if (gains[t] > max_gain) {
+                max_gain = gains[t];
                 best_idx = t;
+            }
+            if (gains[t] < min_gain) {
+                min_gain = gains[t];
             }
         }
 
-        // Only update if variation is substantial
-        if (best_gain > GS_VARIATION_THRESHOLD && best_idx != curr_idx) {
+        // Paper's variation threshold logic:
+        // if max(hitsIncr[] - conflictsIncr[]) < (1 + variationThreshold) * min(hitsIncr[] - conflictsIncr[]):
+        //     nextT = T  (don't change)
+        // Note: variationThreshold in paper is a percentage (e.g., 3% = 0.03)
+        // We use GS_VARIATION_THRESHOLD as percentage points (e.g., 5 means 5%)
+        bool variation_substantial = true;
+        if (min_gain < 0) {
+            // When min is negative, check if max is substantially better
+            // max_gain >= (1 + threshold%) * min_gain
+            // Since min is negative, multiplying by (1+x) makes it more negative
+            // So we want max_gain to be significantly larger than this more negative value
+            variation_substantial = (max_gain * 100 >= (100 + GS_VARIATION_THRESHOLD) * min_gain);
+        } else {
+            // When min is non-negative, check the relative improvement
+            variation_substantial = (max_gain * 100 >= (100 + GS_VARIATION_THRESHOLD) * min_gain);
+        }
+
+        // Only update if variation is substantial and there's actual improvement
+        if (variation_substantial && best_idx != curr_idx && max_gain > 0) {
             state.curr_timeout_idx = best_idx;
-            // Note: The actual timeout_counter will use this new value when next timeout starts
         }
 
         // Reset statistics for next arbitration period
@@ -657,26 +695,12 @@ void CommandQueue::GS_ArbitrateTimeout() {
 
 // ===== Row Exclusion Functions =====
 
-void CommandQueue::RE_DetectLongLivedRow(int queue_idx, const Command& cmd) {
-    auto& detect = re_detect_state_[queue_idx];
-
-    // If previous row was closed by timeout and new request accesses the same row
-    // This indicates the row is a "long-lived row" that benefits from staying open
-    if (detect.prev_closed_by_timeout && detect.prev_row == cmd.Row()) {
-        RowExclusionEntry entry;
-        entry.rank = cmd.Rank();
-        entry.bankgroup = cmd.Bankgroup();
-        entry.bank = cmd.Bank();
-        entry.row = cmd.Row();
-        entry.caused_conflict = false;
-
-        RE_AddEntry(entry);
-    }
-
-    // Update detection state
-    detect.prev_row = cmd.Row();
-    detect.prev_closed_by_timeout = false;
-}
+// Note: Row Exclusion detection is now done in GS_ProcessACT() as per paper Section 4.2:
+// "If an activated row is the same as the previous row and was closed due to
+// the expiration of the timeout window the previous time it was open,
+// it is placed in a row exclusion store."
+// The detection state (prev_row, prev_closed_by_timeout) is set in controller.cc
+// when timeout precharge occurs, and checked in GS_ProcessACT when ACT command is issued.
 
 void CommandQueue::RE_AddEntry(const RowExclusionEntry& entry) {
     // Check if entry already exists

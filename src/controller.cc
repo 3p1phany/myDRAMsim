@@ -146,7 +146,9 @@ void Controller::ClockTick() {
                     }
 
                     // Mark this row as closed by timeout (for Row Exclusion detection)
+                    // Paper Section 4.2: track the last open row and if it was closed due to timeout
                     cmd_queue_.re_detect_state_[i].prev_closed_by_timeout = true;
+                    cmd_queue_.re_detect_state_[i].prev_row = cmd.Row();
 
                     cmd_queue_.timeout_ticking[i]=false;
                     cmd_queue_.timeout_counter[i]=cmd_queue_.GetCurrentTimeout(i);  // Use dynamic timeout

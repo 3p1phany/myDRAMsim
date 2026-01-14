@@ -125,7 +125,7 @@ class CommandQueue {
     std::vector<RowExclusionDetectState> re_detect_state_;  // per bank
 
     // Row Exclusion functions
-    void RE_DetectLongLivedRow(int queue_idx, const Command& cmd);
+    // Note: Detection is done in GS_ProcessACT() per paper Section 4.2
     void RE_AddEntry(const RowExclusionEntry& entry);
     bool RE_IsInStore(int rank, int bankgroup, int bank, int row) const;
     void RE_MarkConflict(int rank, int bankgroup, int bank, int row);
