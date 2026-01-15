@@ -247,23 +247,54 @@ void JedecDRAMSystem::PrintRowHitDistanceStats() const {
     out << "## Row Hit Distance Distribution\n";
     out << "###########################################\n";
 
-    // Aggregate into bins (bin_width = 100 cycles)
-    std::map<int, uint64_t> binned_histogram;
-    int bin_width = 100;
+    // Use a capped, non-uniform binning based on timing constraints.
+    int max_distance = config_.tREFI;
+    if (max_distance <= 0) {
+        max_distance = 10000;
+    }
+    int base_bin = std::max(8, config_.tCCD_S * 2);
+
+    std::vector<std::pair<int, int>> bins;
+    int start = 0;
+    int width = base_bin;
+    while (start < max_distance) {
+        int end = start + width - 1;
+        if (end >= max_distance) {
+            end = max_distance - 1;
+        }
+        bins.emplace_back(start, end);
+        start = end + 1;
+        if (start >= max_distance) {
+            break;
+        }
+        width *= 2;
+    }
+
+    std::vector<uint64_t> binned_counts(bins.size(), 0);
+    uint64_t overflow_count = 0;
     for (const auto& pair : row_hit_distance_histogram_) {
         int distance = pair.first;
         uint64_t count = pair.second;
-        int bin = (distance / bin_width) * bin_width;
-        binned_histogram[bin] += count;
+        if (distance >= max_distance) {
+            overflow_count += count;
+            continue;
+        }
+        for (size_t i = 0; i < bins.size(); i++) {
+            if (distance >= bins[i].first && distance <= bins[i].second) {
+                binned_counts[i] += count;
+                break;
+            }
+        }
     }
 
     uint64_t total_hits = 0;
-    for (const auto& pair : binned_histogram) {
-        int bin = pair.first;
-        uint64_t count = pair.second;
-        out << "distance[" << bin << "-" << (bin + bin_width - 1) << "]: " << count << "\n";
-        total_hits += count;
+    for (size_t i = 0; i < bins.size(); i++) {
+        out << "distance[" << bins[i].first << "-" << bins[i].second << "]: "
+            << binned_counts[i] << "\n";
+        total_hits += binned_counts[i];
     }
+    out << "distance[>=" << max_distance << "]: " << overflow_count << "\n";
+    total_hits += overflow_count;
     out << "total_row_hits: " << total_hits << "\n";
     out.close();
 }
