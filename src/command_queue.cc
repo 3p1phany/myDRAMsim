@@ -67,6 +67,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::RL_PAGE){
             pp=RowBufPolicy::OPEN_PAGE;  // RL_PAGE: start as open-page, RL decides when to close
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::STATIC_TIMEOUT){
+            pp=RowBufPolicy::OPEN_PAGE;  // STATIC_TIMEOUT: open-page with fixed timeout precharge
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
