@@ -17,37 +17,23 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
       simple_stats_(config_, channel_id_),
       channel_state_(config, timing),
       cmd_queue_(channel_id_, config, channel_state_, simple_stats_,
-                     (config.row_buf_policy == "CLOSE_PAGE"   ? RowBufPolicy::CLOSE_PAGE :
-                      config.row_buf_policy == "SMART_CLOSE" ? RowBufPolicy::SMART_CLOSE:
-                      config.row_buf_policy == "DPM"         ? RowBufPolicy::DPM:
-                      config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
-                      config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
-                      config.row_buf_policy == "GS_ALIGNED"  ? RowBufPolicy::GS_ALIGNED:
-                      config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
-                      config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
-                      config.row_buf_policy == "RL_PAGE"     ? RowBufPolicy::RL_PAGE:
-                      config.row_buf_policy == "CRAFT"       ? RowBufPolicy::CRAFT:
-                      config.row_buf_policy == "ABP"         ? RowBufPolicy::ABP:
-                      config.row_buf_policy == "INTEL_ADAPTIVE" ? RowBufPolicy::INTEL_ADAPTIVE:
-                      config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
+                     (config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
+                      config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
+                      config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
+                      config.row_buf_policy == "GS"         ? RowBufPolicy::GS:
+                      config.row_buf_policy == "STATIC_TIMEOUT" ? RowBufPolicy::STATIC_TIMEOUT:
+                      config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
       refresh_(config, channel_state_),
 #ifdef THERMAL
       thermal_calc_(thermal_calc),
 #endif  // THERMAL
       is_unified_queue_(config.unified_queue),
-      row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE"   ? RowBufPolicy::CLOSE_PAGE :
-                      config.row_buf_policy == "SMART_CLOSE" ? RowBufPolicy::SMART_CLOSE:
-                      config.row_buf_policy == "DPM"         ? RowBufPolicy::DPM:
-                      config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
-                      config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
-                      config.row_buf_policy == "GS_ALIGNED"  ? RowBufPolicy::GS_ALIGNED:
-                      config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
-                      config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
-                      config.row_buf_policy == "RL_PAGE"     ? RowBufPolicy::RL_PAGE:
-                      config.row_buf_policy == "CRAFT"       ? RowBufPolicy::CRAFT:
-                      config.row_buf_policy == "ABP"         ? RowBufPolicy::ABP:
-                      config.row_buf_policy == "INTEL_ADAPTIVE" ? RowBufPolicy::INTEL_ADAPTIVE:
-                      config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
+      row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
+                      config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
+                      config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
+                      config.row_buf_policy == "GS"         ? RowBufPolicy::GS:
+                      config.row_buf_policy == "STATIC_TIMEOUT" ? RowBufPolicy::STATIC_TIMEOUT:
+                      config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {
 
@@ -201,55 +187,27 @@ void Controller::ClockTick() {
             }
         }
     }
-    else if(row_buf_policy_==RowBufPolicy::CRAFT){
-        // CRAFT: adaptive timeout countdown and precharge
+    else if(row_buf_policy_==RowBufPolicy::STATIC_TIMEOUT){ // Static Timeout policy handling
+        // Decrease timeout counter for each bank
         for(int i=0;i<cmd_queue_.num_queues_;i++){
             if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]>0){
                 cmd_queue_.timeout_counter[i]--;
             }
+            // Timeout reached, issue precharge
             if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]==0){
                 auto cmd = cmd_queue_.issued_cmd[i];
                 cmd.cmd_type=CommandType::PRECHARGE;
+
                 auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
                 if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
-                    // Record state for feedback on next ACT
-                    cmd_queue_.craft_state_[i].prev_closed_by_timeout = true;
-                    cmd_queue_.craft_state_[i].prev_row = cmd.Row();
-
-                    // Accumulate timeout value for average computation
-                    simple_stats_.Increment("craft_timeout_precharges");
-                    simple_stats_.AddValue("craft_timeout_value_sum", cmd_queue_.craft_state_[i].timeout_value);
-
+                    // Clear timeout state
                     cmd_queue_.timeout_ticking[i]=false;
+                    cmd_queue_.timeout_counter[i]=config_.static_timeout_cycles_;
+                    cmd_queue_.static_timeout_open_row_[i]=-1;
+
+                    // Issue precharge command
                     IssueCommand(cmd);
                 }
-                // If timing not ready, precharge is deferred (counter stays at 0, ticking remains true)
-            }
-        }
-    }
-    else if(row_buf_policy_==RowBufPolicy::INTEL_ADAPTIVE){
-        // Intel Adaptive: timeout countdown and precharge (same mechanism as CRAFT)
-        for(int i=0;i<cmd_queue_.num_queues_;i++){
-            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]>0){
-                cmd_queue_.timeout_counter[i]--;
-            }
-            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]==0){
-                auto cmd = cmd_queue_.issued_cmd[i];
-                cmd.cmd_type=CommandType::PRECHARGE;
-                auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
-                if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
-                    // Record state for feedback on next ACT
-                    auto& istate = cmd_queue_.intap_state_[i];
-                    istate.prev_closed_by_timeout = true;
-                    istate.prev_row = cmd.Row();
-
-                    simple_stats_.Increment("intap_timeout_precharges");
-                    simple_stats_.AddValue("intap_tr_value_sum", istate.timeout_register);
-
-                    cmd_queue_.timeout_ticking[i]=false;
-                    IssueCommand(cmd);
-                }
-                // If timing not ready, precharge is deferred (counter stays at 0, ticking remains true)
             }
         }
     }

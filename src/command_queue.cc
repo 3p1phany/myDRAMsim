@@ -113,40 +113,10 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     re_detect_state_.resize(num_queues_);
     // row_exclusion_store_ is already empty (deque default)
 
-    // ===== FAPS-3D State Init =====
-    faps_bank_state_.resize(num_queues_);
-
-    // ===== DYMPL Predictor Init =====
-    if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
-        dympl_predictor_ = std::unique_ptr<DYMPLPredictor>(
-            new DYMPLPredictor(num_queues_, simple_stats_));
+    // ===== Static Timeout Init =====
+    if (top_row_buf_policy_ == RowBufPolicy::STATIC_TIMEOUT) {
+        static_timeout_open_row_.resize(num_queues_, -1);
     }
-
-    // ===== RL_PAGE Agent Init =====
-    if (top_row_buf_policy_ == RowBufPolicy::RL_PAGE) {
-        rl_page_agent_ = std::unique_ptr<RLPageAgent>(
-            new RLPageAgent(num_queues_, simple_stats_));
-    }
-
-    // ===== CRAFT State Init =====
-    craft_state_.resize(num_queues_);
-    // Default values set by CraftBankState struct initialization
-    // Compute CONFLICT_STEP from DRAM timing: BASE_STEP * tRP / (tRP + tRCD)
-    craft_conflict_step_ = CRAFT_BASE_STEP * config_.tRP / (config_.tRP + config_.tRCD);
-    craft_gentle_step_ = craft_conflict_step_ / 2;  // [RS] half of conflict step
-
-    // ===== Intel Adaptive State Init =====
-    intap_state_.resize(num_queues_);
-    // Default values set by IntelAdaptiveBankState struct initialization
-
-    // ===== ABP State Init =====
-    abp_table_.resize(num_queues_);
-    for (auto& table : abp_table_) {
-        table.resize(ABP_SETS_PER_BANK * ABP_WAYS);
-        // Default: all entries invalid (struct defaults)
-    }
-    abp_state_.resize(num_queues_);
-    // Default values set by ABPBankState struct initialization
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -209,67 +179,13 @@ Command CommandQueue::GetCommandToIssue() {
                             issued_cmd[queue_idx_]=cmd;
                         }
                     }
-                    else if(top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
-                        // Paper: timeout starts after last CAS in row hit cluster
-                        // Only require no more pending row hits (row_hit_count==1 already checked)
+                    // Static Timeout: start timer when last row hit is issued
+                    else if(top_row_buf_policy_==RowBufPolicy::STATIC_TIMEOUT){
+                        // This is the last request for this row, start static timeout
                         timeout_ticking[queue_idx_]=true;
-                        timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);
+                        timeout_counter[queue_idx_]=config_.static_timeout_cycles_;
                         issued_cmd[queue_idx_]=cmd;
-                    }
-                    else if(top_row_buf_policy_==RowBufPolicy::CRAFT){
-                        // CRAFT: start adaptive timeout when bank queue becomes empty
-                        if(queues_[queue_idx_].size()==1){
-                            timeout_ticking[queue_idx_]=true;
-                            timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);
-                            issued_cmd[queue_idx_]=cmd;
-                        }
-                    }
-                    else if(top_row_buf_policy_==RowBufPolicy::INTEL_ADAPTIVE){
-                        // Intel Adaptive: start timeout when bank queue becomes empty
-                        if(queues_[queue_idx_].size()==1){
-                            timeout_ticking[queue_idx_]=true;
-                            timeout_counter[queue_idx_]=intap_state_[queue_idx_].timeout_register;
-                            issued_cmd[queue_idx_]=cmd;
-                        }
-                    }
-                    else if(top_row_buf_policy_==RowBufPolicy::ABP){
-                        // ABP: check if accumulated access count has reached prediction
-                        auto& astate = abp_state_[queue_idx_];
-                        if(astate.predictor_hit && astate.current_row_accesses >= astate.predicted_accesses){
-                            // Prediction reached: auto-precharge
-                            cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
-                                           cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
-                            autoPRE_added=true;
-                            simple_stats_.Increment("abp_auto_precharges");
-                        }
-                        // else: predictor miss or not yet reached → keep open (like open-page)
-                    }
-                    else if(top_row_buf_policy_==RowBufPolicy::DYMPL){
-                        // DYMPL: perceptron-based open/close decision
-                        bool keep_open = dympl_predictor_->Predict(queue_idx_, cmd.Row(), cmd.Column());
-                        if(!keep_open){
-                            cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
-                                           cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
-                            autoPRE_added=true;
-                        }
-                    }
-                    else if(top_row_buf_policy_==RowBufPolicy::RL_PAGE){
-                        // RL_PAGE: SARSA+CMAC open/close decision
-                        int rd_q = static_cast<int>(controller_->read_queue().size());
-                        int wr_q = static_cast<int>(controller_->write_buffer().size());
-                        int bk_q = static_cast<int>(queues_[queue_idx_].size());
-                        int rh = channel_state_.RowHitCount(cmd.Rank(), cmd.Bankgroup(), cmd.Bank());
-                        int sr = row_hit_count;  // same-row pending count
-
-                        int action = rl_page_agent_->Decide(
-                            queue_idx_, cmd.Row(), rd_q, wr_q, bk_q, rh, sr);
-
-                        if (action == 0) {  // CLOSE
-                            cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
-                                           cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
-                            autoPRE_added=true;
-                        }
-                        // action == 1: KEEP_OPEN, don't modify cmd
+                        static_timeout_open_row_[queue_idx_]=cmd.Row();
                     }
                 }
 
@@ -567,6 +483,19 @@ bool CommandQueue::AddCommand(Command cmd) {
             }
         }
 
+        // Static Timeout: handle new request arrival
+        if(top_row_buf_policy_==RowBufPolicy::STATIC_TIMEOUT){
+            int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
+
+            if(timeout_ticking[index] && timeout_counter[index]>0){
+                if(cmd.Row() == static_timeout_open_row_[index]){
+                    // Same row request arrives: reset timer, continue waiting
+                    timeout_counter[index]=config_.static_timeout_cycles_;
+                }
+                // Note: Different row requests are blocked in GetFirstReadyInQueue
+            }
+        }
+
 
         return true;
     } else {
@@ -622,6 +551,11 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
         Command cmd = channel_state_.GetReadyCommand(*cmd_it, clk_);
         if (!cmd.IsValid()) {
             continue;
+        }
+
+        // === Static Timeout blocking check ===
+        if (ShouldBlockForStaticTimeout(queue_idx_, cmd)) {
+            continue;  // Block this command, try next
         }
 
         //compute true row_hit command targeting open row or victim rows
@@ -795,13 +729,47 @@ void CommandQueue::GetBankFromIndex(int queue_idx, int& rank, int& bankgroup, in
 }
 
 int CommandQueue::GetCurrentTimeout(int queue_idx) const {
-    if (top_row_buf_policy_ == RowBufPolicy::CRAFT) {
-        return craft_state_[queue_idx].timeout_value;
+    if (top_row_buf_policy_ == RowBufPolicy::STATIC_TIMEOUT) {
+        return config_.static_timeout_cycles_;  // Return fixed value
     }
-    if (top_row_buf_policy_ == RowBufPolicy::INTEL_ADAPTIVE) {
-        return intap_state_[queue_idx].timeout_register;
-    }
+    // GS policy returns dynamic value
     return GS_TIMEOUT_VALUES[gs_shadow_state_[queue_idx].curr_timeout_idx];
+}
+
+bool CommandQueue::ShouldBlockForStaticTimeout(int queue_idx, const Command& cmd) const {
+    // Only effective during STATIC_TIMEOUT policy when timer is running
+    if (top_row_buf_policy_ != RowBufPolicy::STATIC_TIMEOUT) {
+        return false;
+    }
+
+    if (!timeout_ticking[queue_idx] || timeout_counter[queue_idx] <= 0) {
+        return false;
+    }
+
+    int waiting_row = static_timeout_open_row_[queue_idx];
+    if (waiting_row < 0) {
+        return false;
+    }
+
+    // Block condition: command accesses a different row
+    // - ACTIVATE to different row: block
+    // - PRECHARGE: block (would close current row)
+    // - READ/WRITE to different row: block
+
+    if (cmd.cmd_type == CommandType::ACTIVATE) {
+        return cmd.Row() != waiting_row;
+    }
+
+    if (cmd.cmd_type == CommandType::PRECHARGE) {
+        return true;  // Block all precharge
+    }
+
+    // READ/WRITE to same row: allow through
+    if (cmd.IsReadWrite()) {
+        return cmd.Row() != waiting_row;
+    }
+
+    return false;
 }
 
 void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle) {

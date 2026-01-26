@@ -264,6 +264,17 @@ void Config::InitSystemParams() {
     aggressive_precharging_enabled =
         reader.GetBoolean("system", "aggressive_precharging_enabled", false);
 
+    // Read static timeout cycles configuration
+    static_timeout_cycles_ = GetInteger("system", "static_timeout_cycles", 100);
+
+    // Validate static_timeout_cycles when using STATIC_TIMEOUT policy
+    if (row_buf_policy == "STATIC_TIMEOUT") {
+        if (static_timeout_cycles_ <= 0) {
+            std::cerr << "Warning: STATIC_TIMEOUT requires static_timeout_cycles > 0, using default 100" << std::endl;
+            static_timeout_cycles_ = 100;
+        }
+    }
+
     return;
 }
 

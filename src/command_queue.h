@@ -210,6 +210,12 @@ class CommandQueue {
     void GetBankFromIndex(int queue_idx, int& rank, int& bankgroup, int& bank) const;
     int GetCurrentTimeout(int queue_idx) const;
 
+    // ===== Static Timeout Members =====
+    std::vector<int> static_timeout_open_row_;  // Row number waiting for each queue
+
+    // Static Timeout functions
+    bool ShouldBlockForStaticTimeout(int queue_idx, const Command& cmd) const;
+
     // ===== Row Exclusion Members =====
     std::deque<RowExclusionEntry> row_exclusion_store_;  // per channel, shared by all banks
     std::vector<RowExclusionDetectState> re_detect_state_;  // per bank

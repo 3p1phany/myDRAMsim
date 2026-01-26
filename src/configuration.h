@@ -162,6 +162,9 @@ class Config {
 
     int ideal_memory_latency;
 
+    // Static timeout configuration
+    int static_timeout_cycles_;  // Static timeout cycle count, 0 means disabled
+
 #ifdef THERMAL
     std::string loc_mapping;
     int num_row_refresh;       // number of rows to be refreshed for one time
