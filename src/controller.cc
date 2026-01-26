@@ -3,6 +3,13 @@
 #include <iostream>
 #include <limits>
 
+// ===== Epoch Row Buffer Statistics (Global for ChampSim access) =====
+// Enable with -DENABLE_EPOCH_STATS compile flag
+#ifdef ENABLE_EPOCH_STATS
+uint64_t dramsim3_epoch_row_hits = 0;
+uint64_t dramsim3_epoch_row_misses = 0;
+#endif
+
 namespace dramsim3 {
 
 #ifdef THERMAL
@@ -475,6 +482,9 @@ void Controller::UpdateCommandStats(const Command &cmd) {
             if (channel_state_.RowHitCount(cmd.Rank(), cmd.Bankgroup(),
                                            cmd.Bank()) != 0) {
                 simple_stats_.Increment("num_read_row_hits");
+#ifdef ENABLE_EPOCH_STATS
+                ::dramsim3_epoch_row_hits++;
+#endif
             }
             // track bus turnaround: W->R
             if (last_rw_cmd_valid_ && last_rw_cmd_is_write_) {
@@ -489,6 +499,9 @@ void Controller::UpdateCommandStats(const Command &cmd) {
             if (channel_state_.RowHitCount(cmd.Rank(), cmd.Bankgroup(),
                                            cmd.Bank()) != 0) {
                 simple_stats_.Increment("num_write_row_hits");
+#ifdef ENABLE_EPOCH_STATS
+                ::dramsim3_epoch_row_hits++;
+#endif
             }
             // track bus turnaround: R->W
             if (last_rw_cmd_valid_ && !last_rw_cmd_is_write_) {
@@ -499,6 +512,9 @@ void Controller::UpdateCommandStats(const Command &cmd) {
             break;
         case CommandType::ACTIVATE:
             simple_stats_.Increment("num_act_cmds");
+#ifdef ENABLE_EPOCH_STATS
+            ::dramsim3_epoch_row_misses++;
+#endif
             break;
         case CommandType::PRECHARGE:
             simple_stats_.Increment("num_pre_cmds");
