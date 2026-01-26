@@ -90,6 +90,11 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     // ===== Row Exclusion State Init =====
     re_detect_state_.resize(num_queues_);
     // row_exclusion_store_ is already empty (deque default)
+
+    // ===== Static Timeout Init =====
+    if (top_row_buf_policy_ == RowBufPolicy::STATIC_TIMEOUT) {
+        static_timeout_open_row_.resize(num_queues_, -1);
+    }
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -151,6 +156,14 @@ Command CommandQueue::GetCommandToIssue() {
                             timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);  // Use dynamic timeout
                             issued_cmd[queue_idx_]=cmd;
                         }
+                    }
+                    // Static Timeout: start timer when last row hit is issued
+                    else if(top_row_buf_policy_==RowBufPolicy::STATIC_TIMEOUT){
+                        // This is the last request for this row, start static timeout
+                        timeout_ticking[queue_idx_]=true;
+                        timeout_counter[queue_idx_]=config_.static_timeout_cycles_;
+                        issued_cmd[queue_idx_]=cmd;
+                        static_timeout_open_row_[queue_idx_]=cmd.Row();
                     }
                 }
 
@@ -354,6 +367,19 @@ bool CommandQueue::AddCommand(Command cmd) {
             }
         }
 
+        // Static Timeout: handle new request arrival
+        if(top_row_buf_policy_==RowBufPolicy::STATIC_TIMEOUT){
+            int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
+
+            if(timeout_ticking[index] && timeout_counter[index]>0){
+                if(cmd.Row() == static_timeout_open_row_[index]){
+                    // Same row request arrives: reset timer, continue waiting
+                    timeout_counter[index]=config_.static_timeout_cycles_;
+                }
+                // Note: Different row requests are blocked in GetFirstReadyInQueue
+            }
+        }
+
 
         return true;
     } else {
@@ -409,6 +435,11 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
         Command cmd = channel_state_.GetReadyCommand(*cmd_it, clk_);
         if (!cmd.IsValid()) {
             continue;
+        }
+
+        // === Static Timeout blocking check ===
+        if (ShouldBlockForStaticTimeout(queue_idx_, cmd)) {
+            continue;  // Block this command, try next
         }
 
         //compute true row_hit command targeting open row or victim rows
@@ -539,7 +570,47 @@ void CommandQueue::GetBankFromIndex(int queue_idx, int& rank, int& bankgroup, in
 }
 
 int CommandQueue::GetCurrentTimeout(int queue_idx) const {
+    if (top_row_buf_policy_ == RowBufPolicy::STATIC_TIMEOUT) {
+        return config_.static_timeout_cycles_;  // Return fixed value
+    }
+    // GS policy returns dynamic value
     return GS_TIMEOUT_VALUES[gs_shadow_state_[queue_idx].curr_timeout_idx];
+}
+
+bool CommandQueue::ShouldBlockForStaticTimeout(int queue_idx, const Command& cmd) const {
+    // Only effective during STATIC_TIMEOUT policy when timer is running
+    if (top_row_buf_policy_ != RowBufPolicy::STATIC_TIMEOUT) {
+        return false;
+    }
+
+    if (!timeout_ticking[queue_idx] || timeout_counter[queue_idx] <= 0) {
+        return false;
+    }
+
+    int waiting_row = static_timeout_open_row_[queue_idx];
+    if (waiting_row < 0) {
+        return false;
+    }
+
+    // Block condition: command accesses a different row
+    // - ACTIVATE to different row: block
+    // - PRECHARGE: block (would close current row)
+    // - READ/WRITE to different row: block
+
+    if (cmd.cmd_type == CommandType::ACTIVATE) {
+        return cmd.Row() != waiting_row;
+    }
+
+    if (cmd.cmd_type == CommandType::PRECHARGE) {
+        return true;  // Block all precharge
+    }
+
+    // READ/WRITE to same row: allow through
+    if (cmd.IsReadWrite()) {
+        return cmd.Row() != waiting_row;
+    }
+
+    return false;
 }
 
 void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle) {

@@ -21,6 +21,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
                       config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
                       config.row_buf_policy == "GS"         ? RowBufPolicy::GS:
+                      config.row_buf_policy == "STATIC_TIMEOUT" ? RowBufPolicy::STATIC_TIMEOUT:
                       config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
       refresh_(config, channel_state_),
 #ifdef THERMAL
@@ -31,6 +32,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
                       config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
                       config.row_buf_policy == "GS"         ? RowBufPolicy::GS:
+                      config.row_buf_policy == "STATIC_TIMEOUT" ? RowBufPolicy::STATIC_TIMEOUT:
                       config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {
@@ -152,6 +154,30 @@ void Controller::ClockTick() {
 
                     cmd_queue_.timeout_ticking[i]=false;
                     cmd_queue_.timeout_counter[i]=cmd_queue_.GetCurrentTimeout(i);  // Use dynamic timeout
+                    IssueCommand(cmd);
+                }
+            }
+        }
+    }
+    else if(row_buf_policy_==RowBufPolicy::STATIC_TIMEOUT){ // Static Timeout policy handling
+        // Decrease timeout counter for each bank
+        for(int i=0;i<cmd_queue_.num_queues_;i++){
+            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]>0){
+                cmd_queue_.timeout_counter[i]--;
+            }
+            // Timeout reached, issue precharge
+            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]==0){
+                auto cmd = cmd_queue_.issued_cmd[i];
+                cmd.cmd_type=CommandType::PRECHARGE;
+
+                auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
+                if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
+                    // Clear timeout state
+                    cmd_queue_.timeout_ticking[i]=false;
+                    cmd_queue_.timeout_counter[i]=config_.static_timeout_cycles_;
+                    cmd_queue_.static_timeout_open_row_[i]=-1;
+
+                    // Issue precharge command
                     IssueCommand(cmd);
                 }
             }
