@@ -274,6 +274,31 @@ void Controller::ClockTick() {
     }
 
     ScheduleTransaction();
+
+    // Sample queue occupancy for statistics
+    // Command Queue
+    if (cmd_queue_.IsQueueFull()) {
+        simple_stats_.Increment("cmd_queue_full_cycles");
+    }
+    if (cmd_queue_.QueueEmpty()) {
+        simple_stats_.Increment("cmd_queue_empty_cycles");
+    }
+    // Transaction Queue
+    size_t trans_size, trans_cap;
+    if (is_unified_queue_) {
+        trans_size = unified_queue_.size();
+        trans_cap = unified_queue_.capacity();
+    } else {
+        trans_size = read_queue_.size() + write_buffer_.size();
+        trans_cap = read_queue_.capacity() + write_buffer_.capacity();
+    }
+    if (trans_cap > 0 && trans_size >= trans_cap) {
+        simple_stats_.Increment("trans_queue_full_cycles");
+    }
+    if (trans_size == 0) {
+        simple_stats_.Increment("trans_queue_empty_cycles");
+    }
+
     clk_++;
     cmd_queue_.ClockTick();
     simple_stats_.Increment("num_cycles");

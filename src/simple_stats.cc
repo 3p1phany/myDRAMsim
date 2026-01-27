@@ -42,6 +42,12 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     InitStat("num_write_to_read", "counter",
              "Number of write-to-read bus turnaround events");
 
+    // Queue occupancy counters
+    InitStat("cmd_queue_full_cycles", "counter", "Cycles when cmd queue is full");
+    InitStat("cmd_queue_empty_cycles", "counter", "Cycles when cmd queue is empty");
+    InitStat("trans_queue_full_cycles", "counter", "Cycles when trans queue is full");
+    InitStat("trans_queue_empty_cycles", "counter", "Cycles when trans queue is empty");
+
     // double stats
     InitStat("act_energy", "double", "Activation energy");
     InitStat("read_energy", "double", "Read energy");
@@ -82,137 +88,11 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     InitStat("average_interarrival", "calculated",
              "Average request interarrival latency (cycles)");
 
-    // GS accuracy counters (registered for all policies; only incremented under GS/GS_NOHOTROW)
-    InitStat("gs_timeout_precharges", "counter",
-             "GS timeout precharges issued");
-    InitStat("gs_timeout_correct", "counter",
-             "GS timeout precharges verified correct (next ACT targets different row)");
-    InitStat("gs_timeout_wrong", "counter",
-             "GS timeout precharges verified wrong (next ACT targets same row)");
-    InitStat("gs_timeout_deferred", "counter",
-             "GS timeout expired but precharge deferred due to timing constraint");
-    InitStat("gs_re_insertions", "counter",
-             "GS RE store insertions (excluding duplicates)");
-    InitStat("gs_re_hits", "counter",
-             "GS RE store hits (timeout precharge blocked)");
-    InitStat("gs_re_hit_useful", "counter",
-             "GS RE hits verified useful (protected row accessed)");
-    InitStat("gs_re_hit_useless", "counter",
-             "GS RE hits verified useless (protected row not accessed)");
-    InitStat("gs_re_hit_cas_served", "counter",
-             "CAS commands served on RE-protected rows");
-    InitStat("gs_re_evictions", "counter",
-             "GS RE store evictions due to capacity");
-    InitStat("gs_timeout_switches", "counter",
-             "GS timeout value switches during arbitration");
-    // Length 7 corresponds to GS_TIMEOUT_VALUES[] = {50, 100, 150, 200, 300, 400, 800}
-    // defined as GS_TIMEOUT_COUNT in command_queue.h
-    InitVecStat("gs_timeout_dist", "vec_counter",
-                "GS timeout distribution at arbitration", "idx", 7);
-
-    // FAPS-3D counters
-    InitStat("faps_epoch_count", "counter",
-             "FAPS epoch evaluations performed (per-bank)");
-    InitStat("faps_switch_to_close", "counter",
-             "FAPS switches from open-page to close-page");
-    InitStat("faps_switch_to_open", "counter",
-             "FAPS switches from close-page to open-page");
-
-    // DYMPL accuracy counters (registered for all policies; only incremented under DYMPL)
-    InitStat("dympl_predictions", "counter",
-             "DYMPL total predictions made");
-    InitStat("dympl_predict_open", "counter",
-             "DYMPL predictions: keep page open");
-    InitStat("dympl_predict_close", "counter",
-             "DYMPL predictions: auto-precharge");
-    InitStat("dympl_true_open", "counter",
-             "DYMPL correct: predicted open, got row hit");
-    InitStat("dympl_false_open", "counter",
-             "DYMPL wrong: predicted open, got conflict");
-    InitStat("dympl_true_close", "counter",
-             "DYMPL correct: predicted close, different row came");
-    InitStat("dympl_false_close", "counter",
-             "DYMPL wrong: predicted close, same row returned");
-    InitStat("dympl_train_events", "counter",
-             "DYMPL weight update events");
-    InitStat("dympl_prt_hits", "counter",
-             "DYMPL PRT lookup hits");
-    InitStat("dympl_prt_misses", "counter",
-             "DYMPL PRT lookup misses (default open)");
-    InitStat("dympl_prt_evictions", "counter",
-             "DYMPL PRT LRU evictions");
-
-    // CRAFT counters
-    InitStat("craft_timeout_precharges", "counter",
-             "CRAFT timeout precharges issued");
-    InitStat("craft_timeout_wrong", "counter",
-             "CRAFT wrong precharges (same row reopened after timeout close)");
-    InitStat("craft_timeout_correct", "counter",
-             "CRAFT correct precharges (different row opened after timeout close)");
-    InitStat("craft_conflicts", "counter",
-             "CRAFT conflicts (different row arrived during timeout)");
-    InitStat("craft_escalations", "counter",
-             "CRAFT escalations (timeout increased on wrong precharge)");
-    InitStat("craft_deescalations", "counter",
-             "CRAFT de-escalations (timeout decreased on conflict)");
-    InitVecStat("craft_reopen_streak_dist", "vec_counter",
-                "CRAFT reopen streak distribution at ACT", "streak", 8);
-    InitHistoStat("craft_timeout_value_sum", "CRAFT timeout values at precharge", 0, 3200, 32);
-
-    // CRAFT enhancement counters
-    // [PR] Phase Reset
-    InitStat("craft_phase_resets", "counter",
-             "CRAFT phase-change fast resets triggered");
-    // [QDSD] Queue-Depth Scaled De-escalation
-    InitVecStat("craft_qdsd_scale_dist", "vec_counter",
-                "CRAFT QDSD scale factor distribution (0-4)", "scale", 5);
-    // [RS] Right Streak Gentle De-escalation
-    InitStat("craft_gentle_deescalations", "counter",
-             "CRAFT gentle de-escalations triggered by right-precharge streak");
-    // [RW] Read/Write Cost Differentiation
-    InitStat("craft_wrong_read", "counter",
-             "CRAFT wrong precharge triggered by read");
-    InitStat("craft_wrong_write", "counter",
-             "CRAFT wrong precharge triggered by write");
-    InitStat("craft_conflict_read", "counter",
-             "CRAFT conflict caused by read");
-    InitStat("craft_conflict_write", "counter",
-             "CRAFT conflict caused by write");
-
-    // Intel Adaptive counters
-    InitStat("intap_conflicts", "counter",
-             "Intel Adaptive: conflicts (MC--)");
-    InitStat("intap_wrong_precharges", "counter",
-             "Intel Adaptive: wrong precharges (MC++)");
-    InitStat("intap_right_precharges", "counter",
-             "Intel Adaptive: right precharges");
-    InitStat("intap_tr_increments", "counter",
-             "Intel Adaptive: TR incremented (open longer)");
-    InitStat("intap_tr_decrements", "counter",
-             "Intel Adaptive: TR decremented (close sooner)");
-    InitStat("intap_checks", "counter",
-             "Intel Adaptive: MC check events");
-    InitStat("intap_timeout_precharges", "counter",
-             "Intel Adaptive: total timeout precharges");
-    InitHistoStat("intap_tr_value_sum", "Intel Adaptive: TR value distribution", 0, 3200, 32);
-
-    // RL_PAGE counters
-    InitStat("rlpage_decisions", "counter",
-             "RL_PAGE total decisions made (cluster-end decision points)");
-    InitStat("rlpage_close_count", "counter",
-             "RL_PAGE close decisions");
-    InitStat("rlpage_keepopen_count", "counter",
-             "RL_PAGE keep-open decisions");
-    InitStat("rlpage_explorations", "counter",
-             "RL_PAGE epsilon-greedy explorations");
-    InitStat("rlpage_rewards", "counter",
-             "RL_PAGE total reward events");
-    InitStat("rlpage_positive_rewards", "counter",
-             "RL_PAGE decisions that received positive reward");
-    InitStat("rlpage_negative_rewards", "counter",
-             "RL_PAGE decisions that received negative reward");
-    InitStat("rlpage_updates", "counter",
-             "RL_PAGE SARSA weight updates");
+    // Queue occupancy ratio (calculated)
+    InitStat("cmd_queue_full_ratio", "calculated", "Ratio of cycles cmd queue is full");
+    InitStat("cmd_queue_empty_ratio", "calculated", "Ratio of cycles cmd queue is empty");
+    InitStat("trans_queue_full_ratio", "calculated", "Ratio of cycles trans queue is full");
+    InitStat("trans_queue_empty_ratio", "calculated", "Ratio of cycles trans queue is empty");
 }
 
 void SimpleStats::AddValue(const std::string name, const int value) {
@@ -548,6 +428,19 @@ void SimpleStats::UpdateEpochStats() {
     calculated_["average_interarrival"] =
         GetHistoAvg(epoch_histo_counts_.at("interarrival_latency"));
 
+    // Queue occupancy ratio calculation
+    uint64_t num_cycles = epoch_counters_["num_cycles"];
+    if (num_cycles > 0) {
+        calculated_["cmd_queue_full_ratio"] =
+            static_cast<double>(epoch_counters_["cmd_queue_full_cycles"]) / num_cycles;
+        calculated_["cmd_queue_empty_ratio"] =
+            static_cast<double>(epoch_counters_["cmd_queue_empty_cycles"]) / num_cycles;
+        calculated_["trans_queue_full_ratio"] =
+            static_cast<double>(epoch_counters_["trans_queue_full_cycles"]) / num_cycles;
+        calculated_["trans_queue_empty_ratio"] =
+            static_cast<double>(epoch_counters_["trans_queue_empty_cycles"]) / num_cycles;
+    }
+
     UpdatePrints(true);
     for (auto& it : epoch_counters_) {
         it.second = 0;
@@ -609,6 +502,19 @@ void SimpleStats::UpdateFinalStats() {
         GetHistoAvg(histo_counts_.at("read_latency"));
     calculated_["average_interarrival"] =
         GetHistoAvg(histo_counts_.at("interarrival_latency"));
+
+    // Queue occupancy ratio calculation
+    uint64_t total_cycles = counters_["num_cycles"];
+    if (total_cycles > 0) {
+        calculated_["cmd_queue_full_ratio"] =
+            static_cast<double>(counters_["cmd_queue_full_cycles"]) / total_cycles;
+        calculated_["cmd_queue_empty_ratio"] =
+            static_cast<double>(counters_["cmd_queue_empty_cycles"]) / total_cycles;
+        calculated_["trans_queue_full_ratio"] =
+            static_cast<double>(counters_["trans_queue_full_cycles"]) / total_cycles;
+        calculated_["trans_queue_empty_ratio"] =
+            static_cast<double>(counters_["trans_queue_empty_cycles"]) / total_cycles;
+    }
 
     UpdatePrints(false);
     return;
