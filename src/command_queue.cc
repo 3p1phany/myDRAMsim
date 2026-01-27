@@ -520,6 +520,19 @@ int CommandQueue::QueueUsage() const {
     return usage;
 }
 
+int CommandQueue::GetTotalQueueCapacity() const {
+    return num_queues_ * queue_size_;
+}
+
+bool CommandQueue::IsQueueFull() const {
+    for (const auto& queue : queues_) {
+        if (queue.size() < queue_size_) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CommandQueue::HasRWDependency(const CMDIterator& cmd_it,
                                    const CMDQueue& queue) const {
     // Read after write has been checked in controller so we only

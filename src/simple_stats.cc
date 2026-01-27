@@ -38,6 +38,12 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     InitStat("num_srefx_cmds", "counter", "Number of SREFX commands");
     InitStat("hbm_dual_cmds", "counter", "Number of cycles dual cmds issued");
 
+    // Queue occupancy counters
+    InitStat("cmd_queue_full_cycles", "counter", "Cycles when cmd queue is full");
+    InitStat("cmd_queue_empty_cycles", "counter", "Cycles when cmd queue is empty");
+    InitStat("trans_queue_full_cycles", "counter", "Cycles when trans queue is full");
+    InitStat("trans_queue_empty_cycles", "counter", "Cycles when trans queue is empty");
+
     // double stats
     InitStat("act_energy", "double", "Activation energy");
     InitStat("read_energy", "double", "Read energy");
@@ -77,6 +83,12 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
              "Average read request latency (cycles)");
     InitStat("average_interarrival", "calculated",
              "Average request interarrival latency (cycles)");
+
+    // Queue occupancy ratio (calculated)
+    InitStat("cmd_queue_full_ratio", "calculated", "Ratio of cycles cmd queue is full");
+    InitStat("cmd_queue_empty_ratio", "calculated", "Ratio of cycles cmd queue is empty");
+    InitStat("trans_queue_full_ratio", "calculated", "Ratio of cycles trans queue is full");
+    InitStat("trans_queue_empty_ratio", "calculated", "Ratio of cycles trans queue is empty");
 }
 
 void SimpleStats::AddValue(const std::string name, const int value) {
@@ -412,6 +424,19 @@ void SimpleStats::UpdateEpochStats() {
     calculated_["average_interarrival"] =
         GetHistoAvg(epoch_histo_counts_.at("interarrival_latency"));
 
+    // Queue occupancy ratio calculation
+    uint64_t num_cycles = epoch_counters_["num_cycles"];
+    if (num_cycles > 0) {
+        calculated_["cmd_queue_full_ratio"] =
+            static_cast<double>(epoch_counters_["cmd_queue_full_cycles"]) / num_cycles;
+        calculated_["cmd_queue_empty_ratio"] =
+            static_cast<double>(epoch_counters_["cmd_queue_empty_cycles"]) / num_cycles;
+        calculated_["trans_queue_full_ratio"] =
+            static_cast<double>(epoch_counters_["trans_queue_full_cycles"]) / num_cycles;
+        calculated_["trans_queue_empty_ratio"] =
+            static_cast<double>(epoch_counters_["trans_queue_empty_cycles"]) / num_cycles;
+    }
+
     UpdatePrints(true);
     for (auto& it : epoch_counters_) {
         it.second = 0;
@@ -473,6 +498,19 @@ void SimpleStats::UpdateFinalStats() {
         GetHistoAvg(histo_counts_.at("read_latency"));
     calculated_["average_interarrival"] =
         GetHistoAvg(histo_counts_.at("interarrival_latency"));
+
+    // Queue occupancy ratio calculation
+    uint64_t total_cycles = counters_["num_cycles"];
+    if (total_cycles > 0) {
+        calculated_["cmd_queue_full_ratio"] =
+            static_cast<double>(counters_["cmd_queue_full_cycles"]) / total_cycles;
+        calculated_["cmd_queue_empty_ratio"] =
+            static_cast<double>(counters_["cmd_queue_empty_cycles"]) / total_cycles;
+        calculated_["trans_queue_full_ratio"] =
+            static_cast<double>(counters_["trans_queue_full_cycles"]) / total_cycles;
+        calculated_["trans_queue_empty_ratio"] =
+            static_cast<double>(counters_["trans_queue_empty_cycles"]) / total_cycles;
+    }
 
     UpdatePrints(false);
     return;

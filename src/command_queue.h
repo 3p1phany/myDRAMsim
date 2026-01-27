@@ -66,6 +66,8 @@ class CommandQueue {
     bool AddCommand(Command cmd);
     bool QueueEmpty() const;
     int QueueUsage() const;
+    int GetTotalQueueCapacity() const;
+    bool IsQueueFull() const;
     std::vector<bool> rank_q_empty;
     std::vector<CMDQueue> victim_cmds_;
     //row hit r/w command count issued in every schedule interval, including those targeting victim commands
