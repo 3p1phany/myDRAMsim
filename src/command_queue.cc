@@ -148,7 +148,7 @@ Command CommandQueue::GetCommandToIssue() {
                                        cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
                         autoPRE_added=true;
                     }
-                    else if(top_row_buf_policy_==RowBufPolicy::GS){
+                    else if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
                         //clock starts ticking
                         //do not block other row conflicting request if they are already in the queue
                         if(queues_[queue_idx_].size()==1){
@@ -344,17 +344,19 @@ bool CommandQueue::AddCommand(Command cmd) {
         queue.push_back(cmd);
         rank_q_empty[cmd.Rank()] = false;
 
-        if(top_row_buf_policy_==RowBufPolicy::GS){
+        if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
             //whenever a new command comes, reset the timeout ticking for this bank
             int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
 
             // timeout clock is still ticking, and a new command arrives
             if(timeout_ticking[index] && timeout_counter[index]>0){
                 if(cmd.Row() != issued_cmd[index].Row()){
-                    // Row conflict: check if row exclusion entry should be marked as causing conflict
-                    // Paper Section 4.2: track entries that caused conflicts for replacement policy
-                    if (RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row())) {
-                        RE_MarkConflict(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row());
+                    if (top_row_buf_policy_ == RowBufPolicy::GS) {
+                        // Row conflict: check if row exclusion entry should be marked as causing conflict
+                        // Paper Section 4.2: track entries that caused conflicts for replacement policy
+                        if (RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row())) {
+                            RE_MarkConflict(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row());
+                        }
                     }
                     //down to zero immediately
                     timeout_counter[index]=0;
@@ -460,13 +462,13 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             }
 
             // GS: Process CAS command for shadow simulation
-            if (top_row_buf_policy_ == RowBufPolicy::GS) {
+            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
                 GS_ProcessCAS(queue_idx_, clk_);
             }
         }
         else if (cmd.cmd_type == CommandType::ACTIVATE) {
             // GS: Process ACT command for shadow simulation
-            if (top_row_buf_policy_ == RowBufPolicy::GS) {
+            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
                 GS_ProcessACT(queue_idx_, cmd.Row(), clk_);
             }
         }
@@ -562,7 +564,7 @@ void CommandQueue::ClockTick() {
         simple_stats_.AddValue("max_victim_queue_len", max_len);
     }
     // GS timeout arbitration
-    if(top_row_buf_policy_==RowBufPolicy::GS){
+    if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
         GS_ArbitrateTimeout();
     }
 }
@@ -637,18 +639,21 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
     // "If an activated row is the same as the previous row and was closed due to
     // the expiration of the timeout window the previous time it was open,
     // it is placed in a row exclusion store."
-    auto& detect = re_detect_state_[queue_idx];
-    if (detect.prev_closed_by_timeout && detect.prev_row == new_row) {
-        RowExclusionEntry entry;
-        entry.rank = rank;
-        entry.bankgroup = bankgroup;
-        entry.bank = bank;
-        entry.row = new_row;
-        entry.caused_conflict = false;
-        RE_AddEntry(entry);
+    // Only active for GS, skipped for GS_NOHOTROW (ablation: no hot row exclusion)
+    if (top_row_buf_policy_ == RowBufPolicy::GS) {
+        auto& detect = re_detect_state_[queue_idx];
+        if (detect.prev_closed_by_timeout && detect.prev_row == new_row) {
+            RowExclusionEntry entry;
+            entry.rank = rank;
+            entry.bankgroup = bankgroup;
+            entry.bank = bank;
+            entry.row = new_row;
+            entry.caused_conflict = false;
+            RE_AddEntry(entry);
+        }
+        // Reset detection state after checking
+        detect.prev_closed_by_timeout = false;
     }
-    // Reset detection state after checking
-    detect.prev_closed_by_timeout = false;
 
     for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
         int timeout_val = GS_TIMEOUT_VALUES[t];

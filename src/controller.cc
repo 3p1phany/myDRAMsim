@@ -24,23 +24,25 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
       simple_stats_(config_, channel_id_),
       channel_state_(config, timing),
       cmd_queue_(channel_id_, config, channel_state_, simple_stats_,
-                     (config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
-                      config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
-                      config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
-                      config.row_buf_policy == "GS"         ? RowBufPolicy::GS:
+                     (config.row_buf_policy == "CLOSE_PAGE"   ? RowBufPolicy::CLOSE_PAGE :
+                      config.row_buf_policy == "SMART_CLOSE" ? RowBufPolicy::SMART_CLOSE:
+                      config.row_buf_policy == "DPM"         ? RowBufPolicy::DPM:
+                      config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
+                      config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
                       config.row_buf_policy == "STATIC_TIMEOUT" ? RowBufPolicy::STATIC_TIMEOUT:
-                      config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
+                      config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
       refresh_(config, channel_state_),
 #ifdef THERMAL
       thermal_calc_(thermal_calc),
 #endif  // THERMAL
       is_unified_queue_(config.unified_queue),
-      row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE" ? RowBufPolicy::CLOSE_PAGE :
-                      config.row_buf_policy == "SMART_CLOSE"? RowBufPolicy::SMART_CLOSE:
-                      config.row_buf_policy == "DPM"        ? RowBufPolicy::DPM:
-                      config.row_buf_policy == "GS"         ? RowBufPolicy::GS:
+      row_buf_policy_(config.row_buf_policy == "CLOSE_PAGE"   ? RowBufPolicy::CLOSE_PAGE :
+                      config.row_buf_policy == "SMART_CLOSE" ? RowBufPolicy::SMART_CLOSE:
+                      config.row_buf_policy == "DPM"         ? RowBufPolicy::DPM:
+                      config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
+                      config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
                       config.row_buf_policy == "STATIC_TIMEOUT" ? RowBufPolicy::STATIC_TIMEOUT:
-                      config.row_buf_policy == "ORACLE"     ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
+                      config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {
 
@@ -132,7 +134,7 @@ void Controller::ClockTick() {
             }
         }
     }
-    else if(row_buf_policy_==RowBufPolicy::GS){ //GS policy timeout handling, can not issue timeout precharge when there is command issued
+    else if(row_buf_policy_==RowBufPolicy::GS || row_buf_policy_==RowBufPolicy::GS_NOHOTROW){ //GS policy timeout handling, can not issue timeout precharge when there is command issued
         //decrease timeout counter for each bank
         for(int i=0;i<cmd_queue_.num_queues_;i++){
             if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]>0){
@@ -146,18 +148,20 @@ void Controller::ClockTick() {
                 //check sending precharge timing is ok
                 auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
                 if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
-                    // Row Exclusion check: if row is in exclusion store, delay precharge
-                    if (cmd_queue_.RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), cmd.Row())) {
-                        // Extend timeout, wait for next evaluation
-                        // Use a shorter extension to avoid indefinite delay
-                        cmd_queue_.timeout_counter[i] = cmd_queue_.GetCurrentTimeout(i);
-                        continue;  // Skip precharge for now
-                    }
+                    if (row_buf_policy_ == RowBufPolicy::GS) {
+                        // Row Exclusion check: if row is in exclusion store, delay precharge
+                        if (cmd_queue_.RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), cmd.Row())) {
+                            // Extend timeout, wait for next evaluation
+                            // Use a shorter extension to avoid indefinite delay
+                            cmd_queue_.timeout_counter[i] = cmd_queue_.GetCurrentTimeout(i);
+                            continue;  // Skip precharge for now
+                        }
 
-                    // Mark this row as closed by timeout (for Row Exclusion detection)
-                    // Paper Section 4.2: track the last open row and if it was closed due to timeout
-                    cmd_queue_.re_detect_state_[i].prev_closed_by_timeout = true;
-                    cmd_queue_.re_detect_state_[i].prev_row = cmd.Row();
+                        // Mark this row as closed by timeout (for Row Exclusion detection)
+                        // Paper Section 4.2: track the last open row and if it was closed due to timeout
+                        cmd_queue_.re_detect_state_[i].prev_closed_by_timeout = true;
+                        cmd_queue_.re_detect_state_[i].prev_row = cmd.Row();
+                    }
 
                     cmd_queue_.timeout_ticking[i]=false;
                     cmd_queue_.timeout_counter[i]=cmd_queue_.GetCurrentTimeout(i);  // Use dynamic timeout
