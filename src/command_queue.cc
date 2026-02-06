@@ -375,14 +375,14 @@ bool CommandQueue::AddCommand(Command cmd) {
         queue.push_back(cmd);
         rank_q_empty[cmd.Rank()] = false;
 
-        if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
+        if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
             //whenever a new command comes, reset the timeout ticking for this bank
             int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
 
             // timeout clock is still ticking, and a new command arrives
             if(timeout_ticking[index] && timeout_counter[index]>0){
                 if(cmd.Row() != issued_cmd[index].Row()){
-                    if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
+                    if (top_row_buf_policy_ == RowBufPolicy::GS) {
                         // Row conflict: check if row exclusion entry should be marked as causing conflict
                         // Paper Section 4.2: track entries that caused conflicts for replacement policy
                         if (RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row())) {
@@ -576,7 +576,7 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             }
 
             // GS: Process CAS command for shadow simulation
-            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
+            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
                 GS_ProcessCAS(queue_idx_, clk_);
             }
             // ABP: Increment per-bank access counter on CAS
@@ -590,7 +590,7 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
         }
         else if (cmd.cmd_type == CommandType::ACTIVATE) {
             // GS: Process ACT command for shadow simulation
-            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
+            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
                 GS_ProcessACT(queue_idx_, cmd.Row(), clk_);
             }
             // DYMPL: Train on ACT (before feature update)
@@ -717,7 +717,7 @@ void CommandQueue::ClockTick() {
         simple_stats_.AddValue("max_victim_queue_len", max_len);
     }
     // GS timeout arbitration
-    if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
+    if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
         GS_ArbitrateTimeout();
     }
     // FAPS arbitration
@@ -817,8 +817,12 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
     GetBankFromIndex(queue_idx, rank, bankgroup, bank);
 
     // Row Exclusion Detection (Paper Section 4.2):
-    // Only active for GS/GS_ALIGNED, skipped for GS_NOHOTROW (ablation: no hot row exclusion)
-    if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
+    // "If an activated row is the same as the previous row and was closed due to
+    // the expiration of the timeout window the previous time it was open,
+    // it is placed in a row exclusion store."
+    // Only active for GS, skipped for GS_NOHOTROW (ablation: no hot row exclusion)
+    if (top_row_buf_policy_ == RowBufPolicy::GS) {
+        auto& detect = re_detect_state_[queue_idx];
         if (detect.prev_closed_by_timeout && detect.prev_row == new_row) {
             RowExclusionEntry entry;
             entry.rank = rank;
@@ -828,6 +832,7 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
             entry.caused_conflict = false;
             RE_AddEntry(entry);
         }
+        // Reset detection state after checking
         detect.prev_closed_by_timeout = false;
     }
 
