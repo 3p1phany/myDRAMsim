@@ -142,21 +142,41 @@ void Controller::ClockTick() {
                     if (row_buf_policy_ == RowBufPolicy::GS) {
                         // Row Exclusion check: if row is in exclusion store, delay precharge
                         if (cmd_queue_.RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), cmd.Row())) {
+                            // RE hit: count and track for verification
+                            simple_stats_.Increment("gs_re_hits");
+                            auto& detect = cmd_queue_.re_detect_state_[i];
+                            if (!detect.pending_re_hit_check) {
+                                detect.pending_re_hit_check = true;
+                                detect.re_hit_row = cmd.Row();
+                            }
                             // Extend timeout, wait for next evaluation
-                            // Use a shorter extension to avoid indefinite delay
                             cmd_queue_.timeout_counter[i] = cmd_queue_.GetCurrentTimeout(i);
                             continue;  // Skip precharge for now
                         }
 
+                        // RE miss: if there was a pending RE hit check, it's useless (Path 3)
+                        auto& detect = cmd_queue_.re_detect_state_[i];
+                        if (detect.pending_re_hit_check) {
+                            simple_stats_.Increment("gs_re_hit_useless");
+                            detect.pending_re_hit_check = false;
+                        }
+
                         // Mark this row as closed by timeout (for Row Exclusion detection)
-                        // Paper Section 4.2: track the last open row and if it was closed due to timeout
                         cmd_queue_.re_detect_state_[i].prev_closed_by_timeout = true;
                         cmd_queue_.re_detect_state_[i].prev_row = cmd.Row();
                     }
 
+                    // GS accuracy: record timeout precharge for verification
+                    simple_stats_.Increment("gs_timeout_precharges");
+                    cmd_queue_.re_detect_state_[i].pending_timeout_check = true;
+                    cmd_queue_.re_detect_state_[i].timeout_closed_row = cmd.Row();
+
                     cmd_queue_.timeout_ticking[i]=false;
                     cmd_queue_.timeout_counter[i]=cmd_queue_.GetCurrentTimeout(i);  // Use dynamic timeout
                     IssueCommand(cmd);
+                } else if (bs.IsRowOpen()) {
+                    // Timing constraint not met, precharge deferred
+                    simple_stats_.Increment("gs_timeout_deferred");
                 }
             }
         }

@@ -77,6 +77,34 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
              "Average read request latency (cycles)");
     InitStat("average_interarrival", "calculated",
              "Average request interarrival latency (cycles)");
+
+    // GS accuracy counters (registered for all policies; only incremented under GS/GS_NOHOTROW)
+    InitStat("gs_timeout_precharges", "counter",
+             "GS timeout precharges issued");
+    InitStat("gs_timeout_correct", "counter",
+             "GS timeout precharges verified correct (next ACT targets different row)");
+    InitStat("gs_timeout_wrong", "counter",
+             "GS timeout precharges verified wrong (next ACT targets same row)");
+    InitStat("gs_timeout_deferred", "counter",
+             "GS timeout expired but precharge deferred due to timing constraint");
+    InitStat("gs_re_insertions", "counter",
+             "GS RE store insertions (excluding duplicates)");
+    InitStat("gs_re_hits", "counter",
+             "GS RE store hits (timeout precharge blocked)");
+    InitStat("gs_re_hit_useful", "counter",
+             "GS RE hits verified useful (protected row accessed)");
+    InitStat("gs_re_hit_useless", "counter",
+             "GS RE hits verified useless (protected row not accessed)");
+    InitStat("gs_re_hit_cas_served", "counter",
+             "CAS commands served on RE-protected rows");
+    InitStat("gs_re_evictions", "counter",
+             "GS RE store evictions due to capacity");
+    InitStat("gs_timeout_switches", "counter",
+             "GS timeout value switches during arbitration");
+    // Length 7 corresponds to GS_TIMEOUT_VALUES[] = {50, 100, 150, 200, 300, 400, 800}
+    // defined as GS_TIMEOUT_COUNT in command_queue.h
+    InitVecStat("gs_timeout_dist", "vec_counter",
+                "GS timeout distribution at arbitration", "idx", 7);
 }
 
 void SimpleStats::AddValue(const std::string name, const int value) {
