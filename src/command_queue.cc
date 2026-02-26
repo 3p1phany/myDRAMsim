@@ -817,12 +817,8 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
     GetBankFromIndex(queue_idx, rank, bankgroup, bank);
 
     // Row Exclusion Detection (Paper Section 4.2):
-    // "If an activated row is the same as the previous row and was closed due to
-    // the expiration of the timeout window the previous time it was open,
-    // it is placed in a row exclusion store."
     // Only active for GS, skipped for GS_NOHOTROW (ablation: no hot row exclusion)
     if (top_row_buf_policy_ == RowBufPolicy::GS) {
-        auto& detect = re_detect_state_[queue_idx];
         if (detect.prev_closed_by_timeout && detect.prev_row == new_row) {
             RowExclusionEntry entry;
             entry.rank = rank;
@@ -832,7 +828,6 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
             entry.caused_conflict = false;
             RE_AddEntry(entry);
         }
-        // Reset detection state after checking
         detect.prev_closed_by_timeout = false;
     }
 
@@ -990,6 +985,12 @@ void CommandQueue::GS_ArbitrateTimeout() {
                 state.curr_timeout_idx = best_idx;
                 simple_stats_.Increment("gs_timeout_switches");
             }
+        }
+
+        // Only update if variation is substantial and there's actual improvement
+        if (variation_substantial && best_idx != curr_idx && max_gain > 0) {
+            state.curr_timeout_idx = best_idx;
+            simple_stats_.Increment("gs_timeout_switches");
         }
 
         // Record current timeout distribution
