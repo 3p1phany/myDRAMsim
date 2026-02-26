@@ -629,19 +629,39 @@ bool CommandQueue::ShouldBlockForStaticTimeout(int queue_idx, const Command& cmd
 }
 
 void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle) {
+    auto& detect = re_detect_state_[queue_idx];
     auto& state = gs_shadow_state_[queue_idx];
 
-    // Get current open row for this bank
+    // --- Accuracy verification ---
+
+    // 1. Verify whether the last timeout precharge was correct
+    if (detect.pending_timeout_check) {
+        if (new_row == detect.timeout_closed_row) {
+            simple_stats_.Increment("gs_timeout_wrong");
+        } else {
+            simple_stats_.Increment("gs_timeout_correct");
+        }
+        detect.pending_timeout_check = false;
+    }
+
+    // 2. Verify whether the last RE hit was useful
+    if (detect.pending_re_hit_check) {
+        if (new_row == detect.re_hit_row) {
+            simple_stats_.Increment("gs_re_hit_useful");
+        } else {
+            simple_stats_.Increment("gs_re_hit_useless");
+        }
+        detect.pending_re_hit_check = false;
+    }
+
+    // --- RE Detection ---
+
     int rank, bankgroup, bank;
     GetBankFromIndex(queue_idx, rank, bankgroup, bank);
 
     // Row Exclusion Detection (Paper Section 4.2):
-    // "If an activated row is the same as the previous row and was closed due to
-    // the expiration of the timeout window the previous time it was open,
-    // it is placed in a row exclusion store."
     // Only active for GS, skipped for GS_NOHOTROW (ablation: no hot row exclusion)
     if (top_row_buf_policy_ == RowBufPolicy::GS) {
-        auto& detect = re_detect_state_[queue_idx];
         if (detect.prev_closed_by_timeout && detect.prev_row == new_row) {
             RowExclusionEntry entry;
             entry.rank = rank;
@@ -651,10 +671,10 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
             entry.caused_conflict = false;
             RE_AddEntry(entry);
         }
-        // Reset detection state after checking
         detect.prev_closed_by_timeout = false;
     }
 
+    // --- Shadow simulation ---
     for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
         int timeout_val = GS_TIMEOUT_VALUES[t];
 
@@ -691,6 +711,14 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
 void CommandQueue::GS_ProcessCAS(int queue_idx, uint64_t curr_cycle) {
     auto& state = gs_shadow_state_[queue_idx];
     int curr_timeout_idx = state.curr_timeout_idx;
+
+    // RE hit accuracy: CAS on protected row confirms RE hit was useful (Path 1)
+    auto& detect = re_detect_state_[queue_idx];
+    if (detect.pending_re_hit_check) {
+        simple_stats_.Increment("gs_re_hit_cas_served");
+        simple_stats_.Increment("gs_re_hit_useful");
+        detect.pending_re_hit_check = false;
+    }
 
     for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
         int timeout_val = GS_TIMEOUT_VALUES[t];
@@ -772,7 +800,11 @@ void CommandQueue::GS_ArbitrateTimeout() {
         // Only update if variation is substantial and there's actual improvement
         if (variation_substantial && best_idx != curr_idx && max_gain > 0) {
             state.curr_timeout_idx = best_idx;
+            simple_stats_.Increment("gs_timeout_switches");
         }
+
+        // Record current timeout distribution
+        simple_stats_.IncrementVec("gs_timeout_dist", state.curr_timeout_idx);
 
         // Reset statistics for next arbitration period
         for (int t = 0; t < GS_TIMEOUT_COUNT; t++) {
@@ -802,8 +834,10 @@ void CommandQueue::RE_AddEntry(const RowExclusionEntry& entry) {
     // If at capacity, remove front entry (FIFO, caused_conflict entries moved to front)
     if (row_exclusion_store_.size() >= static_cast<size_t>(ROW_EXCLUSION_CAPACITY)) {
         row_exclusion_store_.pop_front();
+        simple_stats_.Increment("gs_re_evictions");
     }
 
+    simple_stats_.Increment("gs_re_insertions");
     row_exclusion_store_.push_back(entry);
 }
 

@@ -48,6 +48,11 @@ struct RowExclusionEntry {
 struct RowExclusionDetectState {
     int prev_row = -1;
     bool prev_closed_by_timeout = false;
+    // === Accuracy tracking fields ===
+    int timeout_closed_row = -1;          // Row closed by timeout, awaiting verification
+    bool pending_timeout_check = false;   // Flag: waiting for next ACT to verify timeout decision
+    bool pending_re_hit_check = false;    // Flag: waiting for next CAS/ACT to verify RE hit
+    int re_hit_row = -1;                  // Row protected by RE hit, awaiting verification
 };
 
 using CMDIterator = std::vector<Command>::iterator;
