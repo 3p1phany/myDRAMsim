@@ -9,7 +9,6 @@
 #include "common.h"
 #include "configuration.h"
 #include "dympl_predictor.h"
-#include "rl_page_agent.h"
 #include "simple_stats.h"
 namespace dramsim3 {
 
@@ -158,39 +157,8 @@ class CommandQueue {
     void RE_MarkConflict(int rank, int bankgroup, int bank, int row);
     void RE_RemoveEntry(int rank, int bankgroup, int bank, int row);
 
-    // ===== FAPS-3D Members =====
-    std::vector<FAPSBankState> faps_bank_state_;  // per bank
-    void FAPS_ArbitratePagePolicy();
-    void FAPS_TrackAccess(int queue_idx, int row);
-
     // ===== DYMPL Predictor =====
     std::unique_ptr<DYMPLPredictor> dympl_predictor_;
-
-    // ===== RL_PAGE Agent =====
-    std::unique_ptr<RLPageAgent> rl_page_agent_;
-
-    // ===== CRAFT Members =====
-    std::vector<CraftBankState> craft_state_;  // per bank
-    int craft_conflict_step_;  // computed from tRP and tRCD
-    int craft_gentle_step_;    // [RS] half of conflict step for gentle de-escalation
-
-    // CRAFT functions
-    void CRAFT_ProcessACT(int queue_idx, int new_row, bool triggered_by_read);
-
-    // ===== Intel Adaptive Members =====
-    std::vector<IntelAdaptiveBankState> intap_state_;  // per bank
-    void INTAP_ProcessACT(int bank_idx, int new_row);
-
-    // ===== ABP Members =====
-    // Per-bank predictor table: abp_table_[bank][set * ABP_WAYS + way]
-    std::vector<std::vector<ABPEntry>> abp_table_;  // per bank
-    std::vector<ABPBankState> abp_state_;            // per bank runtime state
-    uint64_t abp_lru_clock_ = 0;                     // global LRU timestamp
-
-    // ABP functions
-    int  ABP_Lookup(int bank_idx, int row);
-    void ABP_Update(int bank_idx, int row, int actual_count);
-    void ABP_ProcessACT(int queue_idx, int new_row);
 };
 
 }  // namespace dramsim3

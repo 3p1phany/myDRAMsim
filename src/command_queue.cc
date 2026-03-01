@@ -61,24 +61,6 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::DYMPL){
             pp=RowBufPolicy::OPEN_PAGE;
         }
-        else if(this->top_row_buf_policy_==RowBufPolicy::FAPS){
-            pp=RowBufPolicy::OPEN_PAGE;  // FAPS: all banks start as open-page (state=3)
-        }
-        else if(this->top_row_buf_policy_==RowBufPolicy::RL_PAGE){
-            pp=RowBufPolicy::OPEN_PAGE;  // RL_PAGE: start as open-page, RL decides when to close
-        }
-        else if(this->top_row_buf_policy_==RowBufPolicy::CRAFT){
-            pp=RowBufPolicy::OPEN_PAGE;  // CRAFT: open-page with adaptive timeout
-        }
-        else if(this->top_row_buf_policy_==RowBufPolicy::ABP){
-            pp=RowBufPolicy::OPEN_PAGE;  // ABP: open-page with access-count prediction
-        }
-        else if(this->top_row_buf_policy_==RowBufPolicy::INTEL_ADAPTIVE){
-            pp=RowBufPolicy::OPEN_PAGE;  // Intel Adaptive: open-page with adaptive timeout
-        }
-        else if(this->top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
-            pp=RowBufPolicy::OPEN_PAGE;  // GS_ALIGNED: open-page with paper-aligned adaptive timeout
-        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -112,6 +94,12 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     // ===== Row Exclusion State Init =====
     re_detect_state_.resize(num_queues_);
     // row_exclusion_store_ is already empty (deque default)
+
+    // ===== DYMPL Predictor Init =====
+    if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
+        dympl_predictor_ = std::unique_ptr<DYMPLPredictor>(
+            new DYMPLPredictor(num_queues_, simple_stats_));
+    }
 
     // ===== Static Timeout Init =====
     if (top_row_buf_policy_ == RowBufPolicy::STATIC_TIMEOUT) {
@@ -177,6 +165,15 @@ Command CommandQueue::GetCommandToIssue() {
                             timeout_ticking[queue_idx_]=true;
                             timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);  // Use dynamic timeout
                             issued_cmd[queue_idx_]=cmd;
+                        }
+                    }
+                    else if(top_row_buf_policy_==RowBufPolicy::DYMPL){
+                        // DYMPL: perceptron-based open/close decision
+                        bool keep_open = dympl_predictor_->Predict(queue_idx_, cmd.Row(), cmd.Column());
+                        if(!keep_open){
+                            cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
+                                           cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
+                            autoPRE_added=true;
                         }
                     }
                     // Static Timeout: start timer when last row hit is issued
@@ -579,10 +576,6 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
                 GS_ProcessCAS(queue_idx_, clk_);
             }
-            // ABP: Increment per-bank access counter on CAS
-            if (top_row_buf_policy_ == RowBufPolicy::ABP) {
-                abp_state_[queue_idx_].current_row_accesses++;
-            }
             // DYMPL: Update features on CAS
             if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
                 dympl_predictor_->UpdateOnCAS(queue_idx_, cmd.Row(), cmd.Column(), true_row_hit);
@@ -597,32 +590,6 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
                 dympl_predictor_->TrainOnACT(queue_idx_, cmd.Row());
                 dympl_predictor_->UpdateOnACT(queue_idx_, cmd.Row());
-            }
-            // RL_PAGE: Reward feedback on ACT (KEEP_OPEN → conflict detection)
-            if (top_row_buf_policy_ == RowBufPolicy::RL_PAGE) {
-                rl_page_agent_->OnActivate(queue_idx_, cmd.Row());
-            }
-            // CRAFT: Process ACT for escalation/right-precharge detection
-            if (top_row_buf_policy_ == RowBufPolicy::CRAFT) {
-                // [RW] Determine if triggering request is read or write
-                bool triggered_by_read = true;  // default to read (conservative)
-                if (CRAFT_RW_ENABLED) {
-                    for (const auto& qcmd : queue) {
-                        if (qcmd.IsReadWrite() && qcmd.Row() == cmd.Row()) {
-                            triggered_by_read = qcmd.IsRead();
-                            break;
-                        }
-                    }
-                }
-                CRAFT_ProcessACT(queue_idx_, cmd.Row(), triggered_by_read);
-            }
-            // Intel Adaptive: Process ACT for wrong/right feedback + periodic check
-            if (top_row_buf_policy_ == RowBufPolicy::INTEL_ADAPTIVE) {
-                INTAP_ProcessACT(queue_idx_, cmd.Row());
-            }
-            // ABP: Process ACT for prediction feedback and new lookup
-            if (top_row_buf_policy_ == RowBufPolicy::ABP) {
-                ABP_ProcessACT(queue_idx_, cmd.Row());
             }
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {
