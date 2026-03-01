@@ -1,12 +1,14 @@
 #ifndef __COMMAND_QUEUE_H
 #define __COMMAND_QUEUE_H
 
+#include <memory>
 #include <unordered_set>
 #include <vector>
 #include <deque>
 #include "channel_state.h"
 #include "common.h"
 #include "configuration.h"
+#include "dympl_predictor.h"
 #include "simple_stats.h"
 namespace dramsim3 {
 
@@ -143,6 +145,9 @@ class CommandQueue {
     bool RE_IsInStore(int rank, int bankgroup, int bank, int row) const;
     void RE_MarkConflict(int rank, int bankgroup, int bank, int row);
     void RE_RemoveEntry(int rank, int bankgroup, int bank, int row);
+
+    // ===== DYMPL Predictor =====
+    std::unique_ptr<DYMPLPredictor> dympl_predictor_;
 };
 
 }  // namespace dramsim3
