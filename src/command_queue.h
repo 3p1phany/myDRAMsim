@@ -23,6 +23,9 @@ static constexpr int GS_ALIGNED_ARBITRATION_REQUESTS = 30000;  // Paper Table 2:
 // ===== FAPS-3D Constants =====
 static constexpr int FAPS_EPOCH_ACCESSES = 1000;
 
+// ===== FAPS-3D Constants =====
+static constexpr int FAPS_EPOCH_ACCESSES = 1000;
+
 // Per bank shadow simulation state for timeout update
 struct GSShadowState {
     int curr_timeout_idx = 1;  // Default 100 cycles (index 1)
@@ -156,6 +159,11 @@ class CommandQueue {
     bool RE_IsInStore(int rank, int bankgroup, int bank, int row) const;
     void RE_MarkConflict(int rank, int bankgroup, int bank, int row);
     void RE_RemoveEntry(int rank, int bankgroup, int bank, int row);
+
+    // ===== FAPS-3D Members =====
+    std::vector<FAPSBankState> faps_bank_state_;  // per bank
+    void FAPS_ArbitratePagePolicy();
+    void FAPS_TrackAccess(int queue_idx, int row);
 
     // ===== DYMPL Predictor =====
     std::unique_ptr<DYMPLPredictor> dympl_predictor_;

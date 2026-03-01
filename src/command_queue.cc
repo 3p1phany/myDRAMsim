@@ -61,6 +61,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::DYMPL){
             pp=RowBufPolicy::OPEN_PAGE;
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::FAPS){
+            pp=RowBufPolicy::OPEN_PAGE;  // FAPS: all banks start as open-page (state=3)
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -94,6 +97,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     // ===== Row Exclusion State Init =====
     re_detect_state_.resize(num_queues_);
     // row_exclusion_store_ is already empty (deque default)
+
+    // ===== FAPS-3D State Init =====
+    faps_bank_state_.resize(num_queues_);
 
     // ===== DYMPL Predictor Init =====
     if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
@@ -1103,201 +1109,6 @@ void CommandQueue::FAPS_ArbitratePagePolicy() {
         fstate.potential_hit_count = 0;
         // Note: last_accessed_row is NOT reset, persists across epochs
     }
-}
-
-// ===== CRAFT Functions =====
-
-void CommandQueue::CRAFT_ProcessACT(int queue_idx, int new_row, bool triggered_by_read) {
-    auto& state = craft_state_[queue_idx];
-
-    if (state.prev_closed_by_timeout) {
-        if (new_row == state.prev_row) {
-            // Wrong precharge: timeout was too short, escalate with exponential backoff
-            int shift = std::min(state.reopen_streak, CRAFT_SHIFT_CAP);
-            int step = CRAFT_BASE_STEP << shift;
-
-            // [RW] Write-triggered wrong precharge: half escalation step
-            if (CRAFT_RW_ENABLED && !triggered_by_read) {
-                step >>= 1;
-                simple_stats_.Increment("craft_wrong_write");
-            } else if (CRAFT_RW_ENABLED) {
-                simple_stats_.Increment("craft_wrong_read");
-            }
-
-            state.timeout_value = std::min(state.timeout_value + step, CRAFT_T_MAX);
-            state.reopen_streak = std::min(state.reopen_streak + 1, CRAFT_REOPEN_STREAK_MAX);
-            state.conflict_streak = 0;  // [PR] non-conflict event breaks conflict streak
-            state.right_streak = 0;     // [RS] wrong precharge breaks right streak
-            simple_stats_.Increment("craft_timeout_wrong");
-            simple_stats_.Increment("craft_escalations");
-        } else {
-            // Right precharge: timeout was appropriate
-
-            // [SD] Streak Decay: decay reopen_streak to reflect fading hot-row intensity
-            if (CRAFT_STREAK_DECAY_ENABLED) {
-                state.reopen_streak = std::max(state.reopen_streak - 1, 0);
-            }
-
-            // [RS] Right Streak: gentle de-escalation on consecutive right precharges
-            if (CRAFT_RIGHT_STREAK_ENABLED) {
-                state.right_streak = std::min(state.right_streak + 1, CRAFT_REOPEN_STREAK_MAX);
-                if (state.right_streak >= CRAFT_RIGHT_THRESHOLD) {
-                    state.timeout_value = std::max(state.timeout_value - craft_gentle_step_, CRAFT_T_MIN);
-                    state.right_streak = 0;
-                    simple_stats_.Increment("craft_gentle_deescalations");
-                }
-            }
-
-            state.conflict_streak = 0;  // [PR] non-conflict event breaks conflict streak
-            simple_stats_.Increment("craft_timeout_correct");
-        }
-        state.prev_closed_by_timeout = false;
-    }
-
-    // Record reopen streak distribution
-    simple_stats_.IncrementVec("craft_reopen_streak_dist", state.reopen_streak);
-}
-
-// ===== Intel Adaptive Functions =====
-
-void CommandQueue::INTAP_ProcessACT(int bank_idx, int new_row) {
-    auto& istate = intap_state_[bank_idx];
-
-    // --- Wrong/Right precharge feedback ---
-    if (istate.prev_closed_by_timeout) {
-        if (new_row == istate.prev_row) {
-            // Wrong precharge: should have kept open => MC++
-            if (istate.mistake_counter < INTAP_MC_MAX) {
-                istate.mistake_counter++;
-            }
-            simple_stats_.Increment("intap_wrong_precharges");
-        } else {
-            // Right precharge: correct prediction => no MC update
-            simple_stats_.Increment("intap_right_precharges");
-        }
-        istate.prev_closed_by_timeout = false;
-    }
-
-    // --- Periodic TR adjustment ---
-    istate.access_counter++;
-    if (istate.access_counter >= INTAP_CHECK_INTERVAL) {
-        if (istate.mistake_counter > INTAP_HIGH_THRESHOLD) {
-            // Too many wrong precharges => open longer
-            istate.timeout_register = std::min(istate.timeout_register + INTAP_TR_STEP,
-                                                INTAP_TR_MAX);
-            simple_stats_.Increment("intap_tr_increments");
-        } else if (istate.mistake_counter < INTAP_LOW_THRESHOLD) {
-            // Too many conflicts => close sooner
-            istate.timeout_register = std::max(istate.timeout_register - INTAP_TR_STEP,
-                                                INTAP_TR_MIN);
-            simple_stats_.Increment("intap_tr_decrements");
-        }
-        // Reset MC and access counter
-        istate.mistake_counter = INTAP_MC_INIT;
-        istate.access_counter = 0;
-        simple_stats_.Increment("intap_checks");
-    }
-
-    // Record current row for next feedback
-    istate.prev_row = new_row;
-}
-
-// ===== ABP Functions =====
-
-int CommandQueue::ABP_Lookup(int bank_idx, int row) {
-    int set = row % ABP_SETS_PER_BANK;
-    int base = set * ABP_WAYS;
-    for (int w = 0; w < ABP_WAYS; w++) {
-        auto& entry = abp_table_[bank_idx][base + w];
-        if (entry.valid && entry.row == row) {
-            entry.lru_counter = ++abp_lru_clock_;
-            return entry.predicted_count;
-        }
-    }
-    return -1;  // miss
-}
-
-void CommandQueue::ABP_Update(int bank_idx, int row, int actual_count) {
-    int set = row % ABP_SETS_PER_BANK;
-    int base = set * ABP_WAYS;
-
-    // Check for existing entry
-    for (int w = 0; w < ABP_WAYS; w++) {
-        auto& entry = abp_table_[bank_idx][base + w];
-        if (entry.valid && entry.row == row) {
-            // Update existing entry with actual count
-            entry.predicted_count = std::min(actual_count, ABP_MAX_PRED);
-            entry.lru_counter = ++abp_lru_clock_;
-            return;
-        }
-    }
-
-    // Find invalid slot or LRU victim
-    int victim = base;
-    uint64_t min_lru = UINT64_MAX;
-    for (int w = 0; w < ABP_WAYS; w++) {
-        auto& entry = abp_table_[bank_idx][base + w];
-        if (!entry.valid) {
-            victim = base + w;
-            break;
-        }
-        if (entry.lru_counter < min_lru) {
-            min_lru = entry.lru_counter;
-            victim = base + w;
-        }
-    }
-
-    // Insert new entry
-    auto& ve = abp_table_[bank_idx][victim];
-    ve.valid = true;
-    ve.row = row;
-    ve.predicted_count = std::min(actual_count, ABP_MAX_PRED);
-    ve.lru_counter = ++abp_lru_clock_;
-}
-
-void CommandQueue::ABP_ProcessACT(int queue_idx, int new_row) {
-    auto& astate = abp_state_[queue_idx];
-
-    // --- Feedback from previous row ---
-    if (astate.current_row >= 0) {
-        int prev_row = astate.current_row;
-        int actual = astate.current_row_accesses;
-
-        if (astate.predictor_hit) {
-            int predicted = astate.predicted_accesses;
-            if (actual < predicted) {
-                // Conflict closed before prediction reached → decrement prediction
-                int new_pred = std::max(actual, 1);
-                ABP_Update(queue_idx, prev_row, new_pred);
-                simple_stats_.Increment("abp_over_predictions");
-            } else if (actual == predicted) {
-                // Perfect prediction (auto-precharched and different row came) → no update needed
-                simple_stats_.Increment("abp_correct_predictions");
-            } else {
-                // actual > predicted: row was reopened after auto-precharge → update to actual
-                ABP_Update(queue_idx, prev_row, actual);
-                simple_stats_.Increment("abp_under_predictions");
-            }
-        } else {
-            // Predictor miss last time: insert the actual count for future prediction
-            ABP_Update(queue_idx, prev_row, actual);
-        }
-    }
-
-    // --- Lookup for new row ---
-    int predicted = ABP_Lookup(queue_idx, new_row);
-    if (predicted >= 0) {
-        astate.predictor_hit = true;
-        astate.predicted_accesses = predicted;
-        simple_stats_.Increment("abp_predictor_hits");
-    } else {
-        astate.predictor_hit = false;
-        astate.predicted_accesses = ABP_DEFAULT_PRED;
-        simple_stats_.Increment("abp_predictor_misses");
-    }
-
-    astate.current_row = new_row;
-    astate.current_row_accesses = 0;
 }
 
 void CommandQueue::RE_RemoveEntry(int rank, int bankgroup, int bank, int row) {

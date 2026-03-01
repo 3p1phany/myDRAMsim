@@ -122,6 +122,14 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     InitVecStat("gs_timeout_dist", "vec_counter",
                 "GS timeout distribution at arbitration", "idx", 7);
 
+    // FAPS-3D counters
+    InitStat("faps_epoch_count", "counter",
+             "FAPS epoch evaluations performed (per-bank)");
+    InitStat("faps_switch_to_close", "counter",
+             "FAPS switches from open-page to close-page");
+    InitStat("faps_switch_to_open", "counter",
+             "FAPS switches from close-page to open-page");
+
     // DYMPL accuracy counters (registered for all policies; only incremented under DYMPL)
     InitStat("dympl_predictions", "counter",
              "DYMPL total predictions made");
