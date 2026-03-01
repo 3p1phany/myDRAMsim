@@ -105,6 +105,30 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     // defined as GS_TIMEOUT_COUNT in command_queue.h
     InitVecStat("gs_timeout_dist", "vec_counter",
                 "GS timeout distribution at arbitration", "idx", 7);
+
+    // DYMPL accuracy counters (registered for all policies; only incremented under DYMPL)
+    InitStat("dympl_predictions", "counter",
+             "DYMPL total predictions made");
+    InitStat("dympl_predict_open", "counter",
+             "DYMPL predictions: keep page open");
+    InitStat("dympl_predict_close", "counter",
+             "DYMPL predictions: auto-precharge");
+    InitStat("dympl_true_open", "counter",
+             "DYMPL correct: predicted open, got row hit");
+    InitStat("dympl_false_open", "counter",
+             "DYMPL wrong: predicted open, got conflict");
+    InitStat("dympl_true_close", "counter",
+             "DYMPL correct: predicted close, different row came");
+    InitStat("dympl_false_close", "counter",
+             "DYMPL wrong: predicted close, same row returned");
+    InitStat("dympl_train_events", "counter",
+             "DYMPL weight update events");
+    InitStat("dympl_prt_hits", "counter",
+             "DYMPL PRT lookup hits");
+    InitStat("dympl_prt_misses", "counter",
+             "DYMPL PRT lookup misses (default open)");
+    InitStat("dympl_prt_evictions", "counter",
+             "DYMPL PRT LRU evictions");
 }
 
 void SimpleStats::AddValue(const std::string name, const int value) {
