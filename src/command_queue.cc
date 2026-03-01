@@ -61,6 +61,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::DYMPL){
             pp=RowBufPolicy::OPEN_PAGE;
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::FAPS){
+            pp=RowBufPolicy::OPEN_PAGE;  // FAPS: all banks start as open-page (state=3)
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -93,6 +96,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     // ===== Row Exclusion State Init =====
     re_detect_state_.resize(num_queues_);
     // row_exclusion_store_ is already empty (deque default)
+
+    // ===== FAPS-3D State Init =====
+    faps_bank_state_.resize(num_queues_);
 
     // ===== DYMPL Predictor Init =====
     if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
@@ -176,6 +182,10 @@ Command CommandQueue::GetCommandToIssue() {
                 //compute total rw command count for each bank
                 total_command_count_[queue_idx_]++;
 
+                // FAPS: Track access for potential hit counting
+                if (top_row_buf_policy_ == RowBufPolicy::FAPS) {
+                    FAPS_TrackAccess(queue_idx_, cmd.Row());
+                }
 
             }
             return cmd;
@@ -283,9 +293,14 @@ Command CommandQueue::FinishRefresh() {
         //clear refresh related victims.
         for(auto i:ref_q_indices_){
             victim_cmds_[i].clear();
-            total_command_count_[i]=0;
-            true_row_hit_count_[i]=0;
-            demand_row_hit_count_[i]=0;
+            // FAPS uses per-bank access-count epoch; do NOT reset
+            // counters on refresh, otherwise the epoch threshold
+            // (1000 accesses) can never be reached between refreshes.
+            if (top_row_buf_policy_ != RowBufPolicy::FAPS) {
+                total_command_count_[i]=0;
+                true_row_hit_count_[i]=0;
+                demand_row_hit_count_[i]=0;
+            }
         }
         ref_q_indices_.clear();
         is_in_ref_ = false;
@@ -550,6 +565,10 @@ void CommandQueue::ClockTick() {
     if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
         GS_ArbitrateTimeout();
     }
+    // FAPS arbitration
+    if(top_row_buf_policy_==RowBufPolicy::FAPS){
+        FAPS_ArbitratePagePolicy();
+    }
 }
 
 // ===== GS Timeout Update Functions =====
@@ -805,6 +824,89 @@ void CommandQueue::RE_MarkConflict(int rank, int bankgroup, int bank, int row) {
             row_exclusion_store_.push_front(entry);
             return;
         }
+    }
+}
+
+// ===== FAPS-3D Functions =====
+
+void CommandQueue::FAPS_TrackAccess(int queue_idx, int row) {
+    auto& fstate = faps_bank_state_[queue_idx];
+    // Hit register: track potential hits only for close-page banks
+    if (row_buf_policy_[queue_idx] == RowBufPolicy::SMART_CLOSE) {
+        if (fstate.last_accessed_row == row && fstate.last_accessed_row != -1) {
+            fstate.potential_hit_count++;
+        }
+    }
+    // Always update last_accessed_row
+    fstate.last_accessed_row = row;
+}
+
+void CommandQueue::FAPS_ArbitratePagePolicy() {
+    for (int i = 0; i < num_queues_; i++) {
+        // Per-bank epoch: only trigger when access count reaches threshold
+        if (total_command_count_[i] < FAPS_EPOCH_ACCESSES) {
+            continue;
+        }
+
+        auto& fstate = faps_bank_state_[i];
+        int total = total_command_count_[i];
+
+        if (row_buf_policy_[i] == RowBufPolicy::OPEN_PAGE) {
+            // ====== Algorithm I: currently open-page mode ======
+            // Use actual row-buffer hit-rate
+            // hit_rate < 0.25
+            if (true_row_hit_count_[i] < (total >> 2)) {
+                bank_sm[i] = 0;
+            }
+            // hit_rate < 0.5
+            else if (true_row_hit_count_[i] < (total >> 1)) {
+                bank_sm[i] = bank_sm[i] > 0 ? bank_sm[i] - 1 : 0;
+            }
+            // hit_rate >= 0.5
+            else {
+                bank_sm[i] = bank_sm[i] < 3 ? bank_sm[i] + 1 : 3;
+            }
+            // Update policy based on FSM state
+            if (bank_sm[i] <= 1) {
+                row_buf_policy_[i] = RowBufPolicy::SMART_CLOSE;
+                simple_stats_.Increment("faps_switch_to_close");
+            } else {
+                row_buf_policy_[i] = RowBufPolicy::OPEN_PAGE;
+            }
+
+        } else if (row_buf_policy_[i] == RowBufPolicy::SMART_CLOSE) {
+            // ====== Algorithm II: currently close-page mode ======
+            // Use potential hit-rate (PBHR)
+            int potential_hits = fstate.potential_hit_count;
+            // pbhr >= 0.75
+            if (potential_hits * 4 >= total * 3) {
+                bank_sm[i] = 3;
+            }
+            // pbhr >= 0.5
+            else if (potential_hits * 2 >= total) {
+                bank_sm[i] = bank_sm[i] < 3 ? bank_sm[i] + 1 : 3;
+            }
+            // pbhr < 0.5
+            else {
+                bank_sm[i] = bank_sm[i] > 0 ? bank_sm[i] - 1 : 0;
+            }
+            // Update policy based on FSM state
+            if (bank_sm[i] >= 2) {
+                row_buf_policy_[i] = RowBufPolicy::OPEN_PAGE;
+                simple_stats_.Increment("faps_switch_to_open");
+            } else {
+                row_buf_policy_[i] = RowBufPolicy::SMART_CLOSE;
+            }
+        }
+
+        simple_stats_.Increment("faps_epoch_count");
+
+        // Per-bank reset counters
+        total_command_count_[i] = 0;
+        true_row_hit_count_[i] = 0;
+        demand_row_hit_count_[i] = 0;
+        fstate.potential_hit_count = 0;
+        // Note: last_accessed_row is NOT reset, persists across epochs
     }
 }
 

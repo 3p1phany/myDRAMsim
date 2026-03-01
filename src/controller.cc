@@ -23,6 +23,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
                       config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
                       config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
+                      config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
                       config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
       refresh_(config, channel_state_),
 #ifdef THERMAL
@@ -35,6 +36,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
                       config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
                       config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
+                      config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
                       config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {

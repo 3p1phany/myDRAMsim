@@ -18,6 +18,9 @@ static constexpr int GS_TIMEOUT_VALUES[GS_TIMEOUT_COUNT] = {50, 100, 150, 200, 3
 static constexpr uint64_t GS_ARBITRATION_PERIOD = 30000;
 static constexpr int GS_VARIATION_THRESHOLD = 5;
 
+// ===== FAPS-3D Constants =====
+static constexpr int FAPS_EPOCH_ACCESSES = 1000;
+
 // Per bank shadow simulation state for timeout update
 struct GSShadowState {
     int curr_timeout_idx = 1;  // Default 100 cycles (index 1)
@@ -45,6 +48,11 @@ struct RowExclusionEntry {
         return rank == other.rank && bankgroup == other.bankgroup &&
                bank == other.bank && row == other.row;
     }
+};
+
+struct FAPSBankState {
+    int last_accessed_row = -1;     // Hit register: last accessed row
+    int potential_hit_count = 0;    // Close-page bank potential hit count
 };
 
 struct RowExclusionDetectState {
@@ -137,6 +145,11 @@ class CommandQueue {
     bool RE_IsInStore(int rank, int bankgroup, int bank, int row) const;
     void RE_MarkConflict(int rank, int bankgroup, int bank, int row);
     void RE_RemoveEntry(int rank, int bankgroup, int bank, int row);
+
+    // ===== FAPS-3D Members =====
+    std::vector<FAPSBankState> faps_bank_state_;  // per bank
+    void FAPS_ArbitratePagePolicy();
+    void FAPS_TrackAccess(int queue_idx, int row);
 
     // ===== DYMPL Predictor =====
     std::unique_ptr<DYMPLPredictor> dympl_predictor_;
