@@ -149,6 +149,24 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
              "DYMPL PRT lookup misses (default open)");
     InitStat("dympl_prt_evictions", "counter",
              "DYMPL PRT LRU evictions");
+
+    // RL_PAGE counters
+    InitStat("rlpage_decisions", "counter",
+             "RL_PAGE total decisions made (cluster-end decision points)");
+    InitStat("rlpage_close_count", "counter",
+             "RL_PAGE close decisions");
+    InitStat("rlpage_keepopen_count", "counter",
+             "RL_PAGE keep-open decisions");
+    InitStat("rlpage_explorations", "counter",
+             "RL_PAGE epsilon-greedy explorations");
+    InitStat("rlpage_rewards", "counter",
+             "RL_PAGE total reward events");
+    InitStat("rlpage_positive_rewards", "counter",
+             "RL_PAGE decisions that received positive reward");
+    InitStat("rlpage_negative_rewards", "counter",
+             "RL_PAGE decisions that received negative reward");
+    InitStat("rlpage_updates", "counter",
+             "RL_PAGE SARSA weight updates");
 }
 
 void SimpleStats::AddValue(const std::string name, const int value) {

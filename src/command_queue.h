@@ -9,6 +9,7 @@
 #include "common.h"
 #include "configuration.h"
 #include "dympl_predictor.h"
+#include "rl_page_agent.h"
 #include "simple_stats.h"
 namespace dramsim3 {
 
@@ -161,6 +162,9 @@ class CommandQueue {
 
     // ===== DYMPL Predictor =====
     std::unique_ptr<DYMPLPredictor> dympl_predictor_;
+
+    // ===== RL_PAGE Agent =====
+    std::unique_ptr<RLPageAgent> rl_page_agent_;
 };
 
 }  // namespace dramsim3
