@@ -38,6 +38,7 @@ add_library(dramsim3 SHARED
     src/controller.cc
     src/dram_system.cc
     src/dympl_predictor.cc
+    src/rl_page_agent.cc
     src/hmc.cc
     src/refresh.cc
     src/simple_stats.cc
