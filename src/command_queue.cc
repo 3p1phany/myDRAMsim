@@ -64,6 +64,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::FAPS){
             pp=RowBufPolicy::OPEN_PAGE;  // FAPS: all banks start as open-page (state=3)
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::RL_PAGE){
+            pp=RowBufPolicy::OPEN_PAGE;  // RL_PAGE: start as open-page, RL decides when to close
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -104,6 +107,12 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
         dympl_predictor_ = std::unique_ptr<DYMPLPredictor>(
             new DYMPLPredictor(num_queues_, simple_stats_));
+    }
+
+    // ===== RL_PAGE Agent Init =====
+    if (top_row_buf_policy_ == RowBufPolicy::RL_PAGE) {
+        rl_page_agent_ = std::unique_ptr<RLPageAgent>(
+            new RLPageAgent(num_queues_, simple_stats_));
     }
 }
 
@@ -175,6 +184,24 @@ Command CommandQueue::GetCommandToIssue() {
                                            cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
                             autoPRE_added=true;
                         }
+                    }
+                    else if(top_row_buf_policy_==RowBufPolicy::RL_PAGE){
+                        // RL_PAGE: SARSA+CMAC open/close decision
+                        int rd_q = static_cast<int>(controller_->read_queue().size());
+                        int wr_q = static_cast<int>(controller_->write_buffer().size());
+                        int bk_q = static_cast<int>(queues_[queue_idx_].size());
+                        int rh = channel_state_.RowHitCount(cmd.Rank(), cmd.Bankgroup(), cmd.Bank());
+                        int sr = row_hit_count;  // same-row pending count
+
+                        int action = rl_page_agent_->Decide(
+                            queue_idx_, cmd.Row(), rd_q, wr_q, bk_q, rh, sr);
+
+                        if (action == 0) {  // CLOSE
+                            cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
+                                           cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
+                            autoPRE_added=true;
+                        }
+                        // action == 1: KEEP_OPEN, don't modify cmd
                     }
                 }
 
@@ -481,6 +508,10 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
                 dympl_predictor_->TrainOnACT(queue_idx_, cmd.Row());
                 dympl_predictor_->UpdateOnACT(queue_idx_, cmd.Row());
+            }
+            // RL_PAGE: Reward feedback on ACT (KEEP_OPEN → conflict detection)
+            if (top_row_buf_policy_ == RowBufPolicy::RL_PAGE) {
+                rl_page_agent_->OnActivate(queue_idx_, cmd.Row());
             }
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {
