@@ -513,6 +513,12 @@ void Controller::UpdateCommandStats(const Command &cmd) {
                 ::dramsim3_epoch_row_hits++;
 #endif
             }
+            // track bus turnaround: W->R
+            if (last_rw_cmd_valid_ && last_rw_cmd_is_write_) {
+                simple_stats_.Increment("num_write_to_read");
+            }
+            last_rw_cmd_valid_ = true;
+            last_rw_cmd_is_write_ = false;
             break;
         case CommandType::WRITE:
         case CommandType::WRITE_PRECHARGE:
@@ -524,6 +530,12 @@ void Controller::UpdateCommandStats(const Command &cmd) {
                 ::dramsim3_epoch_row_hits++;
 #endif
             }
+            // track bus turnaround: R->W
+            if (last_rw_cmd_valid_ && !last_rw_cmd_is_write_) {
+                simple_stats_.Increment("num_read_to_write");
+            }
+            last_rw_cmd_valid_ = true;
+            last_rw_cmd_is_write_ = true;
             break;
         case CommandType::ACTIVATE:
             simple_stats_.Increment("num_act_cmds");

@@ -83,6 +83,10 @@ class Controller {
     // used to calculate inter-arrival latency
     uint64_t last_trans_clk_;
 
+    // track last R/W command direction for bus turnaround counting
+    bool last_rw_cmd_valid_ = false;
+    bool last_rw_cmd_is_write_ = false;
+
     // transaction queueing
     int write_draining_;
     void ScheduleTransaction();
