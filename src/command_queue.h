@@ -66,6 +66,21 @@ struct RowExclusionDetectState {
     int re_hit_row = -1;                  // Row protected by RE hit, awaiting verification
 };
 
+// ===== CRAFT (Cost-Aware Feedback-driven Adaptive Timeout) Constants =====
+static constexpr int CRAFT_T_MIN = 50;
+static constexpr int CRAFT_T_MAX = 3200;
+static constexpr int CRAFT_BASE_STEP = 50;
+static constexpr int CRAFT_INIT_TIMEOUT = 200;
+static constexpr int CRAFT_REOPEN_STREAK_MAX = 7;
+static constexpr int CRAFT_SHIFT_CAP = 5;
+
+struct CraftBankState {
+    int timeout_value = CRAFT_INIT_TIMEOUT;
+    int reopen_streak = 0;
+    int prev_row = -1;
+    bool prev_closed_by_timeout = false;
+};
+
 using CMDIterator = std::vector<Command>::iterator;
 using CMDQueue = std::vector<Command>;
 enum class QueueStructure { PER_RANK, PER_BANK, SIZE };
@@ -157,6 +172,13 @@ class CommandQueue {
 
     // ===== RL_PAGE Agent =====
     std::unique_ptr<RLPageAgent> rl_page_agent_;
+
+    // ===== CRAFT Members =====
+    std::vector<CraftBankState> craft_state_;  // per bank
+    int craft_conflict_step_;  // computed from tRP and tRCD
+
+    // CRAFT functions
+    void CRAFT_ProcessACT(int queue_idx, int new_row);
 };
 
 }  // namespace dramsim3

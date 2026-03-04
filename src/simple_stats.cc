@@ -142,6 +142,23 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     InitStat("dympl_prt_evictions", "counter",
              "DYMPL PRT LRU evictions");
 
+    // CRAFT counters
+    InitStat("craft_timeout_precharges", "counter",
+             "CRAFT timeout precharges issued");
+    InitStat("craft_timeout_wrong", "counter",
+             "CRAFT wrong precharges (same row reopened after timeout close)");
+    InitStat("craft_timeout_correct", "counter",
+             "CRAFT correct precharges (different row opened after timeout close)");
+    InitStat("craft_conflicts", "counter",
+             "CRAFT conflicts (different row arrived during timeout)");
+    InitStat("craft_escalations", "counter",
+             "CRAFT escalations (timeout increased on wrong precharge)");
+    InitStat("craft_deescalations", "counter",
+             "CRAFT de-escalations (timeout decreased on conflict)");
+    InitVecStat("craft_reopen_streak_dist", "vec_counter",
+                "CRAFT reopen streak distribution at ACT", "streak", 8);
+    InitHistoStat("craft_timeout_value_sum", "CRAFT timeout values at precharge", 0, 3200, 32);
+
     // RL_PAGE counters
     InitStat("rlpage_decisions", "counter",
              "RL_PAGE total decisions made (cluster-end decision points)");

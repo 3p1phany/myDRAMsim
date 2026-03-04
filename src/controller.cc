@@ -25,6 +25,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
                       config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
                       config.row_buf_policy == "RL_PAGE"     ? RowBufPolicy::RL_PAGE:
+                      config.row_buf_policy == "CRAFT"       ? RowBufPolicy::CRAFT:
                       config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),this),
       refresh_(config, channel_state_),
 #ifdef THERMAL
@@ -39,6 +40,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
                       config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
                       config.row_buf_policy == "RL_PAGE"     ? RowBufPolicy::RL_PAGE:
+                      config.row_buf_policy == "CRAFT"       ? RowBufPolicy::CRAFT:
                       config.row_buf_policy == "ORACLE"      ? RowBufPolicy::ORACLE     : RowBufPolicy::OPEN_PAGE),
       last_trans_clk_(0),
       write_draining_(0) {
@@ -184,6 +186,32 @@ void Controller::ClockTick() {
                     // Timing constraint not met, precharge deferred
                     simple_stats_.Increment("gs_timeout_deferred");
                 }
+            }
+        }
+    }
+    else if(row_buf_policy_==RowBufPolicy::CRAFT){
+        // CRAFT: adaptive timeout countdown and precharge
+        for(int i=0;i<cmd_queue_.num_queues_;i++){
+            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]>0){
+                cmd_queue_.timeout_counter[i]--;
+            }
+            if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]==0){
+                auto cmd = cmd_queue_.issued_cmd[i];
+                cmd.cmd_type=CommandType::PRECHARGE;
+                auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
+                if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
+                    // Record state for feedback on next ACT
+                    cmd_queue_.craft_state_[i].prev_closed_by_timeout = true;
+                    cmd_queue_.craft_state_[i].prev_row = cmd.Row();
+
+                    // Accumulate timeout value for average computation
+                    simple_stats_.Increment("craft_timeout_precharges");
+                    simple_stats_.AddValue("craft_timeout_value_sum", cmd_queue_.craft_state_[i].timeout_value);
+
+                    cmd_queue_.timeout_ticking[i]=false;
+                    IssueCommand(cmd);
+                }
+                // If timing not ready, precharge is deferred (counter stays at 0, ticking remains true)
             }
         }
     }

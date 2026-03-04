@@ -67,6 +67,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::RL_PAGE){
             pp=RowBufPolicy::OPEN_PAGE;  // RL_PAGE: start as open-page, RL decides when to close
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::CRAFT){
+            pp=RowBufPolicy::OPEN_PAGE;  // CRAFT: open-page with adaptive timeout
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -114,6 +117,12 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         rl_page_agent_ = std::unique_ptr<RLPageAgent>(
             new RLPageAgent(num_queues_, simple_stats_));
     }
+
+    // ===== CRAFT State Init =====
+    craft_state_.resize(num_queues_);
+    // Default values set by CraftBankState struct initialization
+    // Compute CONFLICT_STEP from DRAM timing: BASE_STEP * tRP / (tRP + tRCD)
+    craft_conflict_step_ = CRAFT_BASE_STEP * config_.tRP / (config_.tRP + config_.tRCD);
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -173,6 +182,14 @@ Command CommandQueue::GetCommandToIssue() {
                         if(queues_[queue_idx_].size()==1){
                             timeout_ticking[queue_idx_]=true;
                             timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);  // Use dynamic timeout
+                            issued_cmd[queue_idx_]=cmd;
+                        }
+                    }
+                    else if(top_row_buf_policy_==RowBufPolicy::CRAFT){
+                        // CRAFT: start adaptive timeout when bank queue becomes empty
+                        if(queues_[queue_idx_].size()==1){
+                            timeout_ticking[queue_idx_]=true;
+                            timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);
                             issued_cmd[queue_idx_]=cmd;
                         }
                     }
@@ -415,6 +432,26 @@ bool CommandQueue::AddCommand(Command cmd) {
                 }
             }
         }
+        else if(top_row_buf_policy_==RowBufPolicy::CRAFT){
+            int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
+
+            if(timeout_ticking[index]){
+                if(cmd.Row() != issued_cmd[index].Row()){
+                    // Conflict: timeout too long, de-escalate with cost-aware fixed step
+                    auto& state = craft_state_[index];
+                    state.timeout_value = std::max(state.timeout_value - craft_conflict_step_, CRAFT_T_MIN);
+                    state.reopen_streak = 0;
+                    timeout_counter[index] = 0;  // trigger immediate precharge
+                    simple_stats_.Increment("craft_conflicts");
+                    simple_stats_.Increment("craft_deescalations");
+                }
+                else{
+                    // Row hit during timeout: reset timer, keep row open
+                    timeout_counter[index] = craft_state_[index].timeout_value;
+                    timeout_ticking[index] = false;
+                }
+            }
+        }
 
 
         return true;
@@ -512,6 +549,10 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             // RL_PAGE: Reward feedback on ACT (KEEP_OPEN → conflict detection)
             if (top_row_buf_policy_ == RowBufPolicy::RL_PAGE) {
                 rl_page_agent_->OnActivate(queue_idx_, cmd.Row());
+            }
+            // CRAFT: Process ACT for escalation/right-precharge detection
+            if (top_row_buf_policy_ == RowBufPolicy::CRAFT) {
+                CRAFT_ProcessACT(queue_idx_, cmd.Row());
             }
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {
@@ -618,6 +659,9 @@ void CommandQueue::GetBankFromIndex(int queue_idx, int& rank, int& bankgroup, in
 }
 
 int CommandQueue::GetCurrentTimeout(int queue_idx) const {
+    if (top_row_buf_policy_ == RowBufPolicy::CRAFT) {
+        return craft_state_[queue_idx].timeout_value;
+    }
     return GS_TIMEOUT_VALUES[gs_shadow_state_[queue_idx].curr_timeout_idx];
 }
 
@@ -939,6 +983,31 @@ void CommandQueue::FAPS_ArbitratePagePolicy() {
         fstate.potential_hit_count = 0;
         // Note: last_accessed_row is NOT reset, persists across epochs
     }
+}
+
+// ===== CRAFT Functions =====
+
+void CommandQueue::CRAFT_ProcessACT(int queue_idx, int new_row) {
+    auto& state = craft_state_[queue_idx];
+
+    if (state.prev_closed_by_timeout) {
+        if (new_row == state.prev_row) {
+            // Wrong precharge: timeout was too short, escalate with exponential backoff
+            int shift = std::min(state.reopen_streak, CRAFT_SHIFT_CAP);
+            int step = CRAFT_BASE_STEP << shift;
+            state.timeout_value = std::min(state.timeout_value + step, CRAFT_T_MAX);
+            state.reopen_streak = std::min(state.reopen_streak + 1, CRAFT_REOPEN_STREAK_MAX);
+            simple_stats_.Increment("craft_timeout_wrong");
+            simple_stats_.Increment("craft_escalations");
+        } else {
+            // Right precharge: timeout was appropriate, no adjustment needed
+            simple_stats_.Increment("craft_timeout_correct");
+        }
+        state.prev_closed_by_timeout = false;
+    }
+
+    // Record reopen streak distribution
+    simple_stats_.IncrementVec("craft_reopen_streak_dist", state.reopen_streak);
 }
 
 void CommandQueue::RE_RemoveEntry(int rank, int bankgroup, int bank, int row) {
