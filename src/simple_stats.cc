@@ -37,6 +37,10 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
     InitStat("num_srefe_cmds", "counter", "Number of SREFE commands");
     InitStat("num_srefx_cmds", "counter", "Number of SREFX commands");
     InitStat("hbm_dual_cmds", "counter", "Number of cycles dual cmds issued");
+    InitStat("num_read_to_write", "counter",
+             "Number of read-to-write bus turnaround events");
+    InitStat("num_write_to_read", "counter",
+             "Number of write-to-read bus turnaround events");
 
     // double stats
     InitStat("act_energy", "double", "Activation energy");
