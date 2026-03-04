@@ -435,7 +435,7 @@ bool CommandQueue::AddCommand(Command cmd) {
         else if(top_row_buf_policy_==RowBufPolicy::CRAFT){
             int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
 
-            if(timeout_ticking[index]){
+            if(timeout_ticking[index] && timeout_counter[index] > 0){
                 if(cmd.Row() != issued_cmd[index].Row()){
                     // Conflict: timeout too long, de-escalate with cost-aware fixed step
                     auto& state = craft_state_[index];
