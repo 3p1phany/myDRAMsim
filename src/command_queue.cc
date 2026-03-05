@@ -70,6 +70,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::CRAFT){
             pp=RowBufPolicy::OPEN_PAGE;  // CRAFT: open-page with adaptive timeout
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::ABP){
+            pp=RowBufPolicy::OPEN_PAGE;  // ABP: open-page with access-count prediction
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -123,6 +126,15 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     // Default values set by CraftBankState struct initialization
     // Compute CONFLICT_STEP from DRAM timing: BASE_STEP * tRP / (tRP + tRCD)
     craft_conflict_step_ = CRAFT_BASE_STEP * config_.tRP / (config_.tRP + config_.tRCD);
+
+    // ===== ABP State Init =====
+    abp_table_.resize(num_queues_);
+    for (auto& table : abp_table_) {
+        table.resize(ABP_SETS_PER_BANK * ABP_WAYS);
+        // Default: all entries invalid (struct defaults)
+    }
+    abp_state_.resize(num_queues_);
+    // Default values set by ABPBankState struct initialization
 }
 
 Command CommandQueue::GetCommandToIssue() {
@@ -192,6 +204,18 @@ Command CommandQueue::GetCommandToIssue() {
                             timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);
                             issued_cmd[queue_idx_]=cmd;
                         }
+                    }
+                    else if(top_row_buf_policy_==RowBufPolicy::ABP){
+                        // ABP: check if accumulated access count has reached prediction
+                        auto& astate = abp_state_[queue_idx_];
+                        if(astate.predictor_hit && astate.current_row_accesses >= astate.predicted_accesses){
+                            // Prediction reached: auto-precharge
+                            cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
+                                           cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
+                            autoPRE_added=true;
+                            simple_stats_.Increment("abp_auto_precharges");
+                        }
+                        // else: predictor miss or not yet reached → keep open (like open-page)
                     }
                     else if(top_row_buf_policy_==RowBufPolicy::DYMPL){
                         // DYMPL: perceptron-based open/close decision
@@ -432,6 +456,10 @@ bool CommandQueue::AddCommand(Command cmd) {
                 }
             }
         }
+        else if(top_row_buf_policy_==RowBufPolicy::ABP){
+            // ABP doesn't use timeouts, conflicts are handled naturally via on-demand precharge.
+            // The feedback is given in ABP_ProcessACT when the new row activates.
+        }
         else if(top_row_buf_policy_==RowBufPolicy::CRAFT){
             int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
 
@@ -531,6 +559,10 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
                 GS_ProcessCAS(queue_idx_, clk_);
             }
+            // ABP: Increment per-bank access counter on CAS
+            if (top_row_buf_policy_ == RowBufPolicy::ABP) {
+                abp_state_[queue_idx_].current_row_accesses++;
+            }
             // DYMPL: Update features on CAS
             if (top_row_buf_policy_ == RowBufPolicy::DYMPL) {
                 dympl_predictor_->UpdateOnCAS(queue_idx_, cmd.Row(), cmd.Column(), true_row_hit);
@@ -553,6 +585,10 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             // CRAFT: Process ACT for escalation/right-precharge detection
             if (top_row_buf_policy_ == RowBufPolicy::CRAFT) {
                 CRAFT_ProcessACT(queue_idx_, cmd.Row());
+            }
+            // ABP: Process ACT for prediction feedback and new lookup
+            if (top_row_buf_policy_ == RowBufPolicy::ABP) {
+                ABP_ProcessACT(queue_idx_, cmd.Row());
             }
         }
         else if (cmd.cmd_type == CommandType::PRECHARGE) {
@@ -1008,6 +1044,104 @@ void CommandQueue::CRAFT_ProcessACT(int queue_idx, int new_row) {
 
     // Record reopen streak distribution
     simple_stats_.IncrementVec("craft_reopen_streak_dist", state.reopen_streak);
+}
+
+// ===== ABP Functions =====
+
+int CommandQueue::ABP_Lookup(int bank_idx, int row) {
+    int set = row % ABP_SETS_PER_BANK;
+    int base = set * ABP_WAYS;
+    for (int w = 0; w < ABP_WAYS; w++) {
+        auto& entry = abp_table_[bank_idx][base + w];
+        if (entry.valid && entry.row == row) {
+            entry.lru_counter = ++abp_lru_clock_;
+            return entry.predicted_count;
+        }
+    }
+    return -1;  // miss
+}
+
+void CommandQueue::ABP_Update(int bank_idx, int row, int actual_count) {
+    int set = row % ABP_SETS_PER_BANK;
+    int base = set * ABP_WAYS;
+
+    // Check for existing entry
+    for (int w = 0; w < ABP_WAYS; w++) {
+        auto& entry = abp_table_[bank_idx][base + w];
+        if (entry.valid && entry.row == row) {
+            // Update existing entry with actual count
+            entry.predicted_count = std::min(actual_count, ABP_MAX_PRED);
+            entry.lru_counter = ++abp_lru_clock_;
+            return;
+        }
+    }
+
+    // Find invalid slot or LRU victim
+    int victim = base;
+    uint64_t min_lru = UINT64_MAX;
+    for (int w = 0; w < ABP_WAYS; w++) {
+        auto& entry = abp_table_[bank_idx][base + w];
+        if (!entry.valid) {
+            victim = base + w;
+            break;
+        }
+        if (entry.lru_counter < min_lru) {
+            min_lru = entry.lru_counter;
+            victim = base + w;
+        }
+    }
+
+    // Insert new entry
+    auto& ve = abp_table_[bank_idx][victim];
+    ve.valid = true;
+    ve.row = row;
+    ve.predicted_count = std::min(actual_count, ABP_MAX_PRED);
+    ve.lru_counter = ++abp_lru_clock_;
+}
+
+void CommandQueue::ABP_ProcessACT(int queue_idx, int new_row) {
+    auto& astate = abp_state_[queue_idx];
+
+    // --- Feedback from previous row ---
+    if (astate.current_row >= 0) {
+        int prev_row = astate.current_row;
+        int actual = astate.current_row_accesses;
+
+        if (astate.predictor_hit) {
+            int predicted = astate.predicted_accesses;
+            if (actual < predicted) {
+                // Conflict closed before prediction reached → decrement prediction
+                int new_pred = std::max(actual, 1);
+                ABP_Update(queue_idx, prev_row, new_pred);
+                simple_stats_.Increment("abp_over_predictions");
+            } else if (actual == predicted) {
+                // Perfect prediction (auto-precharched and different row came) → no update needed
+                simple_stats_.Increment("abp_correct_predictions");
+            } else {
+                // actual > predicted: row was reopened after auto-precharge → update to actual
+                ABP_Update(queue_idx, prev_row, actual);
+                simple_stats_.Increment("abp_under_predictions");
+            }
+        } else {
+            // Predictor miss last time: insert the actual count for future prediction
+            ABP_Update(queue_idx, prev_row, actual);
+        }
+    }
+
+    // --- Lookup for new row ---
+    int predicted = ABP_Lookup(queue_idx, new_row);
+    if (predicted >= 0) {
+        astate.predictor_hit = true;
+        astate.predicted_accesses = predicted;
+        simple_stats_.Increment("abp_predictor_hits");
+    } else {
+        astate.predictor_hit = false;
+        astate.predicted_accesses = ABP_DEFAULT_PRED;
+        simple_stats_.Increment("abp_predictor_misses");
+    }
+
+    astate.current_row = new_row;
+    astate.current_row_accesses = 0;
 }
 
 void CommandQueue::RE_RemoveEntry(int rank, int bankgroup, int bank, int row) {

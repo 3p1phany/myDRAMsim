@@ -66,6 +66,26 @@ struct RowExclusionDetectState {
     int re_hit_row = -1;                  // Row protected by RE hit, awaiting verification
 };
 
+// ===== ABP (Access Based Predictor) Constants =====
+static constexpr int ABP_SETS_PER_BANK = 64;
+static constexpr int ABP_WAYS = 4;
+static constexpr int ABP_DEFAULT_PRED = 1;   // conservative default: close after 1 access
+static constexpr int ABP_MAX_PRED = 255;     // 8-bit saturating counter
+
+struct ABPEntry {
+    int row = -1;
+    int predicted_count = ABP_DEFAULT_PRED;
+    bool valid = false;
+    uint64_t lru_counter = 0;
+};
+
+struct ABPBankState {
+    int current_row_accesses = 0;    // actual accesses to current open row
+    int predicted_accesses = ABP_DEFAULT_PRED;  // predicted count from table
+    bool predictor_hit = false;      // whether predictor had an entry for this row
+    int current_row = -1;            // currently tracked row
+};
+
 // ===== CRAFT (Cost-Aware Feedback-driven Adaptive Timeout) Constants =====
 static constexpr int CRAFT_T_MIN = 50;
 static constexpr int CRAFT_T_MAX = 3200;
@@ -179,6 +199,17 @@ class CommandQueue {
 
     // CRAFT functions
     void CRAFT_ProcessACT(int queue_idx, int new_row);
+
+    // ===== ABP Members =====
+    // Per-bank predictor table: abp_table_[bank][set * ABP_WAYS + way]
+    std::vector<std::vector<ABPEntry>> abp_table_;  // per bank
+    std::vector<ABPBankState> abp_state_;            // per bank runtime state
+    uint64_t abp_lru_clock_ = 0;                     // global LRU timestamp
+
+    // ABP functions
+    int  ABP_Lookup(int bank_idx, int row);
+    void ABP_Update(int bank_idx, int row, int actual_count);
+    void ABP_ProcessACT(int queue_idx, int new_row);
 };
 
 }  // namespace dramsim3
