@@ -94,11 +94,47 @@ static constexpr int CRAFT_INIT_TIMEOUT = 200;
 static constexpr int CRAFT_REOPEN_STREAK_MAX = 7;
 static constexpr int CRAFT_SHIFT_CAP = 5;
 
+// ===== CRAFT Enhancement Feature Flags (compile-time toggles for ablation) =====
+static constexpr bool CRAFT_PHASE_RESET_ENABLED = true;
+static constexpr int  CRAFT_PHASE_THRESHOLD = 4;        // consecutive conflicts to trigger fast reset
+
+static constexpr bool CRAFT_QDSD_ENABLED = true;
+static constexpr int  CRAFT_QDSD_SCALE_CAP = 4;         // max queue-depth scale factor
+
+static constexpr bool CRAFT_RIGHT_STREAK_ENABLED = true;
+static constexpr int  CRAFT_RIGHT_THRESHOLD = 4;         // consecutive right precharges for gentle de-escalation
+
+static constexpr bool CRAFT_RW_ENABLED = true;            // read/write cost differentiation
+
+static constexpr bool CRAFT_STREAK_DECAY_ENABLED = true;  // reopen streak decay on right precharge
+
 struct CraftBankState {
     int timeout_value = CRAFT_INIT_TIMEOUT;
     int reopen_streak = 0;
     int prev_row = -1;
     bool prev_closed_by_timeout = false;
+    int conflict_streak = 0;   // [PR] consecutive conflict counter [0-7]
+    int right_streak = 0;      // [RS] consecutive right-precharge counter [0-7]
+};
+
+// ===== Intel Adaptive Page Policy Constants =====
+static constexpr int INTAP_MC_BITS = 4;                        // MC width
+static constexpr int INTAP_MC_MAX = (1 << INTAP_MC_BITS) - 1;  // 15
+static constexpr int INTAP_MC_INIT = INTAP_MC_MAX / 2;         // 7 (midpoint)
+static constexpr int INTAP_HIGH_THRESHOLD = 10;                // MC > 10 => open longer
+static constexpr int INTAP_LOW_THRESHOLD = 5;                  // MC < 5 => close sooner
+static constexpr int INTAP_CHECK_INTERVAL = 128;               // bank accesses per MC check
+static constexpr int INTAP_TR_INIT = 200;                      // initial TR (cycles)
+static constexpr int INTAP_TR_STEP = 50;                       // TR adjustment step (cycles)
+static constexpr int INTAP_TR_MIN = 50;                        // minimum TR
+static constexpr int INTAP_TR_MAX = 3200;                      // maximum TR
+
+struct IntelAdaptiveBankState {
+    int timeout_register = INTAP_TR_INIT;       // TR: current timeout value (cycles)
+    int mistake_counter  = INTAP_MC_INIT;        // MC: 4-bit saturating counter (0-15)
+    int access_counter   = 0;                    // accesses since last MC check
+    int prev_row         = -1;                   // last row closed by timeout
+    bool prev_closed_by_timeout = false;         // whether last precharge was timeout-driven
 };
 
 using CMDIterator = std::vector<Command>::iterator;
@@ -196,9 +232,14 @@ class CommandQueue {
     // ===== CRAFT Members =====
     std::vector<CraftBankState> craft_state_;  // per bank
     int craft_conflict_step_;  // computed from tRP and tRCD
+    int craft_gentle_step_;    // [RS] half of conflict step for gentle de-escalation
 
     // CRAFT functions
-    void CRAFT_ProcessACT(int queue_idx, int new_row);
+    void CRAFT_ProcessACT(int queue_idx, int new_row, bool triggered_by_read);
+
+    // ===== Intel Adaptive Members =====
+    std::vector<IntelAdaptiveBankState> intap_state_;  // per bank
+    void INTAP_ProcessACT(int bank_idx, int new_row);
 
     // ===== ABP Members =====
     // Per-bank predictor table: abp_table_[bank][set * ABP_WAYS + way]

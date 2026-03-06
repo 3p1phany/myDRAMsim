@@ -73,6 +73,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::ABP){
             pp=RowBufPolicy::OPEN_PAGE;  // ABP: open-page with access-count prediction
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::INTEL_ADAPTIVE){
+            pp=RowBufPolicy::OPEN_PAGE;  // Intel Adaptive: open-page with adaptive timeout
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -126,6 +129,11 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     // Default values set by CraftBankState struct initialization
     // Compute CONFLICT_STEP from DRAM timing: BASE_STEP * tRP / (tRP + tRCD)
     craft_conflict_step_ = CRAFT_BASE_STEP * config_.tRP / (config_.tRP + config_.tRCD);
+    craft_gentle_step_ = craft_conflict_step_ / 2;  // [RS] half of conflict step
+
+    // ===== Intel Adaptive State Init =====
+    intap_state_.resize(num_queues_);
+    // Default values set by IntelAdaptiveBankState struct initialization
 
     // ===== ABP State Init =====
     abp_table_.resize(num_queues_);
@@ -202,6 +210,14 @@ Command CommandQueue::GetCommandToIssue() {
                         if(queues_[queue_idx_].size()==1){
                             timeout_ticking[queue_idx_]=true;
                             timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);
+                            issued_cmd[queue_idx_]=cmd;
+                        }
+                    }
+                    else if(top_row_buf_policy_==RowBufPolicy::INTEL_ADAPTIVE){
+                        // Intel Adaptive: start timeout when bank queue becomes empty
+                        if(queues_[queue_idx_].size()==1){
+                            timeout_ticking[queue_idx_]=true;
+                            timeout_counter[queue_idx_]=intap_state_[queue_idx_].timeout_register;
                             issued_cmd[queue_idx_]=cmd;
                         }
                     }
@@ -465,10 +481,48 @@ bool CommandQueue::AddCommand(Command cmd) {
 
             if(timeout_ticking[index] && timeout_counter[index] > 0){
                 if(cmd.Row() != issued_cmd[index].Row()){
-                    // Conflict: timeout too long, de-escalate with cost-aware fixed step
+                    // Conflict: timeout too long, de-escalate
                     auto& state = craft_state_[index];
-                    state.timeout_value = std::max(state.timeout_value - craft_conflict_step_, CRAFT_T_MIN);
+
+                    // [PR] Phase Reset: track consecutive conflicts
+                    if (CRAFT_PHASE_RESET_ENABLED) {
+                        state.conflict_streak = std::min(state.conflict_streak + 1, CRAFT_REOPEN_STREAK_MAX);
+                        if (state.conflict_streak >= CRAFT_PHASE_THRESHOLD) {
+                            // Phase change detected: fast reset to initial timeout
+                            state.timeout_value = CRAFT_INIT_TIMEOUT;
+                            state.conflict_streak = 0;
+                            state.reopen_streak = 0;
+                            simple_stats_.Increment("craft_phase_resets");
+                            goto craft_conflict_done;
+                        }
+                    }
+
+                    {
+                        // Compute de-escalation step
+                        int step = craft_conflict_step_;
+
+                        // [QDSD] Scale step by queue depth
+                        if (CRAFT_QDSD_ENABLED) {
+                            int pending = static_cast<int>(queues_[index].size());
+                            int scale = std::min(pending, CRAFT_QDSD_SCALE_CAP);
+                            step *= scale;
+                            simple_stats_.IncrementVec("craft_qdsd_scale_dist", std::min(scale, 4));
+                        }
+
+                        // [RW] Read conflict: double step for faster de-escalation
+                        if (CRAFT_RW_ENABLED && cmd.IsRead()) {
+                            step *= 2;
+                            simple_stats_.Increment("craft_conflict_read");
+                        } else if (CRAFT_RW_ENABLED) {
+                            simple_stats_.Increment("craft_conflict_write");
+                        }
+
+                        state.timeout_value = std::max(state.timeout_value - step, CRAFT_T_MIN);
+                    }
+
+                    craft_conflict_done:
                     state.reopen_streak = 0;
+                    state.right_streak = 0;   // [RS] conflict breaks right streak
                     timeout_counter[index] = 0;  // trigger immediate precharge
                     simple_stats_.Increment("craft_conflicts");
                     simple_stats_.Increment("craft_deescalations");
@@ -476,6 +530,27 @@ bool CommandQueue::AddCommand(Command cmd) {
                 else{
                     // Row hit during timeout: reset timer, keep row open
                     timeout_counter[index] = craft_state_[index].timeout_value;
+                    timeout_ticking[index] = false;
+                }
+            }
+        }
+        else if(top_row_buf_policy_==RowBufPolicy::INTEL_ADAPTIVE){
+            int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
+
+            if(timeout_ticking[index] && timeout_counter[index] > 0){
+                if(cmd.Row() != issued_cmd[index].Row()){
+                    // Conflict: should have closed sooner => MC--
+                    auto& istate = intap_state_[index];
+                    if (istate.mistake_counter > 0) {
+                        istate.mistake_counter--;
+                    }
+                    simple_stats_.Increment("intap_conflicts");
+                    // Force early timeout
+                    timeout_counter[index] = 0;
+                }
+                else{
+                    // Row hit during timeout: reset timer, keep row open
+                    timeout_counter[index] = intap_state_[index].timeout_register;
                     timeout_ticking[index] = false;
                 }
             }
@@ -584,7 +659,21 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             }
             // CRAFT: Process ACT for escalation/right-precharge detection
             if (top_row_buf_policy_ == RowBufPolicy::CRAFT) {
-                CRAFT_ProcessACT(queue_idx_, cmd.Row());
+                // [RW] Determine if triggering request is read or write
+                bool triggered_by_read = true;  // default to read (conservative)
+                if (CRAFT_RW_ENABLED) {
+                    for (const auto& qcmd : queue) {
+                        if (qcmd.IsReadWrite() && qcmd.Row() == cmd.Row()) {
+                            triggered_by_read = qcmd.IsRead();
+                            break;
+                        }
+                    }
+                }
+                CRAFT_ProcessACT(queue_idx_, cmd.Row(), triggered_by_read);
+            }
+            // Intel Adaptive: Process ACT for wrong/right feedback + periodic check
+            if (top_row_buf_policy_ == RowBufPolicy::INTEL_ADAPTIVE) {
+                INTAP_ProcessACT(queue_idx_, cmd.Row());
             }
             // ABP: Process ACT for prediction feedback and new lookup
             if (top_row_buf_policy_ == RowBufPolicy::ABP) {
@@ -697,6 +786,9 @@ void CommandQueue::GetBankFromIndex(int queue_idx, int& rank, int& bankgroup, in
 int CommandQueue::GetCurrentTimeout(int queue_idx) const {
     if (top_row_buf_policy_ == RowBufPolicy::CRAFT) {
         return craft_state_[queue_idx].timeout_value;
+    }
+    if (top_row_buf_policy_ == RowBufPolicy::INTEL_ADAPTIVE) {
+        return intap_state_[queue_idx].timeout_register;
     }
     return GS_TIMEOUT_VALUES[gs_shadow_state_[queue_idx].curr_timeout_idx];
 }
@@ -1023,7 +1115,7 @@ void CommandQueue::FAPS_ArbitratePagePolicy() {
 
 // ===== CRAFT Functions =====
 
-void CommandQueue::CRAFT_ProcessACT(int queue_idx, int new_row) {
+void CommandQueue::CRAFT_ProcessACT(int queue_idx, int new_row, bool triggered_by_read) {
     auto& state = craft_state_[queue_idx];
 
     if (state.prev_closed_by_timeout) {
@@ -1031,12 +1123,40 @@ void CommandQueue::CRAFT_ProcessACT(int queue_idx, int new_row) {
             // Wrong precharge: timeout was too short, escalate with exponential backoff
             int shift = std::min(state.reopen_streak, CRAFT_SHIFT_CAP);
             int step = CRAFT_BASE_STEP << shift;
+
+            // [RW] Write-triggered wrong precharge: half escalation step
+            if (CRAFT_RW_ENABLED && !triggered_by_read) {
+                step >>= 1;
+                simple_stats_.Increment("craft_wrong_write");
+            } else if (CRAFT_RW_ENABLED) {
+                simple_stats_.Increment("craft_wrong_read");
+            }
+
             state.timeout_value = std::min(state.timeout_value + step, CRAFT_T_MAX);
             state.reopen_streak = std::min(state.reopen_streak + 1, CRAFT_REOPEN_STREAK_MAX);
+            state.conflict_streak = 0;  // [PR] non-conflict event breaks conflict streak
+            state.right_streak = 0;     // [RS] wrong precharge breaks right streak
             simple_stats_.Increment("craft_timeout_wrong");
             simple_stats_.Increment("craft_escalations");
         } else {
-            // Right precharge: timeout was appropriate, no adjustment needed
+            // Right precharge: timeout was appropriate
+
+            // [SD] Streak Decay: decay reopen_streak to reflect fading hot-row intensity
+            if (CRAFT_STREAK_DECAY_ENABLED) {
+                state.reopen_streak = std::max(state.reopen_streak - 1, 0);
+            }
+
+            // [RS] Right Streak: gentle de-escalation on consecutive right precharges
+            if (CRAFT_RIGHT_STREAK_ENABLED) {
+                state.right_streak = std::min(state.right_streak + 1, CRAFT_REOPEN_STREAK_MAX);
+                if (state.right_streak >= CRAFT_RIGHT_THRESHOLD) {
+                    state.timeout_value = std::max(state.timeout_value - craft_gentle_step_, CRAFT_T_MIN);
+                    state.right_streak = 0;
+                    simple_stats_.Increment("craft_gentle_deescalations");
+                }
+            }
+
+            state.conflict_streak = 0;  // [PR] non-conflict event breaks conflict streak
             simple_stats_.Increment("craft_timeout_correct");
         }
         state.prev_closed_by_timeout = false;
@@ -1044,6 +1164,50 @@ void CommandQueue::CRAFT_ProcessACT(int queue_idx, int new_row) {
 
     // Record reopen streak distribution
     simple_stats_.IncrementVec("craft_reopen_streak_dist", state.reopen_streak);
+}
+
+// ===== Intel Adaptive Functions =====
+
+void CommandQueue::INTAP_ProcessACT(int bank_idx, int new_row) {
+    auto& istate = intap_state_[bank_idx];
+
+    // --- Wrong/Right precharge feedback ---
+    if (istate.prev_closed_by_timeout) {
+        if (new_row == istate.prev_row) {
+            // Wrong precharge: should have kept open => MC++
+            if (istate.mistake_counter < INTAP_MC_MAX) {
+                istate.mistake_counter++;
+            }
+            simple_stats_.Increment("intap_wrong_precharges");
+        } else {
+            // Right precharge: correct prediction => no MC update
+            simple_stats_.Increment("intap_right_precharges");
+        }
+        istate.prev_closed_by_timeout = false;
+    }
+
+    // --- Periodic TR adjustment ---
+    istate.access_counter++;
+    if (istate.access_counter >= INTAP_CHECK_INTERVAL) {
+        if (istate.mistake_counter > INTAP_HIGH_THRESHOLD) {
+            // Too many wrong precharges => open longer
+            istate.timeout_register = std::min(istate.timeout_register + INTAP_TR_STEP,
+                                                INTAP_TR_MAX);
+            simple_stats_.Increment("intap_tr_increments");
+        } else if (istate.mistake_counter < INTAP_LOW_THRESHOLD) {
+            // Too many conflicts => close sooner
+            istate.timeout_register = std::max(istate.timeout_register - INTAP_TR_STEP,
+                                                INTAP_TR_MIN);
+            simple_stats_.Increment("intap_tr_decrements");
+        }
+        // Reset MC and access counter
+        istate.mistake_counter = INTAP_MC_INIT;
+        istate.access_counter = 0;
+        simple_stats_.Increment("intap_checks");
+    }
+
+    // Record current row for next feedback
+    istate.prev_row = new_row;
 }
 
 // ===== ABP Functions =====

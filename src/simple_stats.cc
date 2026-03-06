@@ -159,6 +159,43 @@ SimpleStats::SimpleStats(const Config& config, int channel_id)
                 "CRAFT reopen streak distribution at ACT", "streak", 8);
     InitHistoStat("craft_timeout_value_sum", "CRAFT timeout values at precharge", 0, 3200, 32);
 
+    // CRAFT enhancement counters
+    // [PR] Phase Reset
+    InitStat("craft_phase_resets", "counter",
+             "CRAFT phase-change fast resets triggered");
+    // [QDSD] Queue-Depth Scaled De-escalation
+    InitVecStat("craft_qdsd_scale_dist", "vec_counter",
+                "CRAFT QDSD scale factor distribution (0-4)", "scale", 5);
+    // [RS] Right Streak Gentle De-escalation
+    InitStat("craft_gentle_deescalations", "counter",
+             "CRAFT gentle de-escalations triggered by right-precharge streak");
+    // [RW] Read/Write Cost Differentiation
+    InitStat("craft_wrong_read", "counter",
+             "CRAFT wrong precharge triggered by read");
+    InitStat("craft_wrong_write", "counter",
+             "CRAFT wrong precharge triggered by write");
+    InitStat("craft_conflict_read", "counter",
+             "CRAFT conflict caused by read");
+    InitStat("craft_conflict_write", "counter",
+             "CRAFT conflict caused by write");
+
+    // Intel Adaptive counters
+    InitStat("intap_conflicts", "counter",
+             "Intel Adaptive: conflicts (MC--)");
+    InitStat("intap_wrong_precharges", "counter",
+             "Intel Adaptive: wrong precharges (MC++)");
+    InitStat("intap_right_precharges", "counter",
+             "Intel Adaptive: right precharges");
+    InitStat("intap_tr_increments", "counter",
+             "Intel Adaptive: TR incremented (open longer)");
+    InitStat("intap_tr_decrements", "counter",
+             "Intel Adaptive: TR decremented (close sooner)");
+    InitStat("intap_checks", "counter",
+             "Intel Adaptive: MC check events");
+    InitStat("intap_timeout_precharges", "counter",
+             "Intel Adaptive: total timeout precharges");
+    InitHistoStat("intap_tr_value_sum", "Intel Adaptive: TR value distribution", 0, 3200, 32);
+
     // RL_PAGE counters
     InitStat("rlpage_decisions", "counter",
              "RL_PAGE total decisions made (cluster-end decision points)");
