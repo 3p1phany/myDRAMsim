@@ -76,6 +76,9 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
         else if(this->top_row_buf_policy_==RowBufPolicy::INTEL_ADAPTIVE){
             pp=RowBufPolicy::OPEN_PAGE;  // Intel Adaptive: open-page with adaptive timeout
         }
+        else if(this->top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
+            pp=RowBufPolicy::OPEN_PAGE;  // GS_ALIGNED: open-page with paper-aligned adaptive timeout
+        }
     }
     //for(auto& pp: row_buf_policy_){
     //    std::cout<<static_cast<int>(pp)<<std::endl;
@@ -104,6 +107,7 @@ CommandQueue::CommandQueue(int channel_id, const Config& config,
     // ===== GS Shadow State Init =====
     gs_shadow_state_.resize(num_queues_);
     // Default values are set by struct initialization
+    gs_aligned_req_count_.resize(num_queues_, 0);
 
     // ===== Row Exclusion State Init =====
     re_detect_state_.resize(num_queues_);
@@ -204,6 +208,13 @@ Command CommandQueue::GetCommandToIssue() {
                             timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);  // Use dynamic timeout
                             issued_cmd[queue_idx_]=cmd;
                         }
+                    }
+                    else if(top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
+                        // Paper: timeout starts after last CAS in row hit cluster
+                        // Only require no more pending row hits (row_hit_count==1 already checked)
+                        timeout_ticking[queue_idx_]=true;
+                        timeout_counter[queue_idx_]=GetCurrentTimeout(queue_idx_);
+                        issued_cmd[queue_idx_]=cmd;
                     }
                     else if(top_row_buf_policy_==RowBufPolicy::CRAFT){
                         // CRAFT: start adaptive timeout when bank queue becomes empty
@@ -448,14 +459,14 @@ bool CommandQueue::AddCommand(Command cmd) {
         queue.push_back(cmd);
         rank_q_empty[cmd.Rank()] = false;
 
-        if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
+        if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
             //whenever a new command comes, reset the timeout ticking for this bank
             int index=GetQueueIndex(cmd.Rank(),cmd.Bankgroup(),cmd.Bank());
 
             // timeout clock is still ticking, and a new command arrives
             if(timeout_ticking[index] && timeout_counter[index]>0){
                 if(cmd.Row() != issued_cmd[index].Row()){
-                    if (top_row_buf_policy_ == RowBufPolicy::GS) {
+                    if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
                         // Row conflict: check if row exclusion entry should be marked as causing conflict
                         // Paper Section 4.2: track entries that caused conflicts for replacement policy
                         if (RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), issued_cmd[index].Row())) {
@@ -631,7 +642,7 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
             }
 
             // GS: Process CAS command for shadow simulation
-            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
+            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
                 GS_ProcessCAS(queue_idx_, clk_);
             }
             // ABP: Increment per-bank access counter on CAS
@@ -645,7 +656,7 @@ Command CommandQueue::GetFirstReadyInQueue(CMDQueue& queue)  {
         }
         else if (cmd.cmd_type == CommandType::ACTIVATE) {
             // GS: Process ACT command for shadow simulation
-            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW) {
+            if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
                 GS_ProcessACT(queue_idx_, cmd.Row(), clk_);
             }
             // DYMPL: Train on ACT (before feature update)
@@ -759,7 +770,7 @@ void CommandQueue::ClockTick() {
         simple_stats_.AddValue("max_victim_queue_len", max_len);
     }
     // GS timeout arbitration
-    if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW){
+    if(top_row_buf_policy_==RowBufPolicy::GS || top_row_buf_policy_==RowBufPolicy::GS_NOHOTROW || top_row_buf_policy_==RowBufPolicy::GS_ALIGNED){
         GS_ArbitrateTimeout();
     }
     // FAPS arbitration
@@ -825,8 +836,8 @@ void CommandQueue::GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle
     GetBankFromIndex(queue_idx, rank, bankgroup, bank);
 
     // Row Exclusion Detection (Paper Section 4.2):
-    // Only active for GS, skipped for GS_NOHOTROW (ablation: no hot row exclusion)
-    if (top_row_buf_policy_ == RowBufPolicy::GS) {
+    // Only active for GS/GS_ALIGNED, skipped for GS_NOHOTROW (ablation: no hot row exclusion)
+    if (top_row_buf_policy_ == RowBufPolicy::GS || top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
         if (detect.prev_closed_by_timeout && detect.prev_row == new_row) {
             RowExclusionEntry entry;
             entry.rank = rank;
@@ -905,10 +916,28 @@ void CommandQueue::GS_ProcessCAS(int queue_idx, uint64_t curr_cycle) {
                 }
             }
         }
-        // MISS and NONE don't contribute to either counter
+        // MISS: no counter update (row was closed under this timeout)
+        // NONE: row hit CAS (no preceding ACT) — handle for GS_ALIGNED
+        else if (state.next_cas_state[t] == GSShadowState::NextCASState::NONE
+                 && top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED
+                 && state.last_cas_cycle > 0) {
+            // Paper Figure 6: CAS not marked by prev ACT (row hit to already-open row)
+            // Project whether this hit would be preserved under timeout t
+            int64_t gap = static_cast<int64_t>(curr_cycle) - static_cast<int64_t>(state.last_cas_cycle);
+            if (gap < timeout_val) {
+                // Row would still be open under timeout t — hit preserved
+                state.hits[t]++;
+            }
+            // else: row would have been closed — hit lost, becomes miss (no increment)
+        }
 
         // Reset state for next command
         state.next_cas_state[t] = GSShadowState::NextCASState::NONE;
+    }
+
+    // GS_ALIGNED: increment per-bank request counter for request-based arbitration
+    if (top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
+        gs_aligned_req_count_[queue_idx]++;
     }
 
     // Update last_cas_cycle
@@ -916,12 +945,24 @@ void CommandQueue::GS_ProcessCAS(int queue_idx, uint64_t curr_cycle) {
 }
 
 void CommandQueue::GS_ArbitrateTimeout() {
-    // Only arbitrate at specific intervals
-    if (clk_ % GS_ARBITRATION_PERIOD != 0 || clk_ < GS_ARBITRATION_PERIOD) {
-        return;
+    bool is_aligned = (top_row_buf_policy_ == RowBufPolicy::GS_ALIGNED);
+
+    // Original GS/GS_NOHOTROW: cycle-based global arbitration check
+    if (!is_aligned) {
+        if (clk_ % GS_ARBITRATION_PERIOD != 0 || clk_ < GS_ARBITRATION_PERIOD) {
+            return;
+        }
     }
 
     for (int q = 0; q < num_queues_; q++) {
+        // GS_ALIGNED: per-bank request-based arbitration (Paper Table 2: 30000 requests)
+        if (is_aligned) {
+            if (gs_aligned_req_count_[q] < GS_ALIGNED_ARBITRATION_REQUESTS) {
+                continue;  // Not enough requests yet for this bank
+            }
+            gs_aligned_req_count_[q] = 0;  // Reset counter
+        }
+
         auto& state = gs_shadow_state_[q];
         int curr_idx = state.curr_timeout_idx;
 
@@ -948,24 +989,21 @@ void CommandQueue::GS_ArbitrateTimeout() {
         // Paper's variation threshold logic:
         // if max(hitsIncr[] - conflictsIncr[]) < (1 + variationThreshold) * min(hitsIncr[] - conflictsIncr[]):
         //     nextT = T  (don't change)
-        // Note: variationThreshold in paper is a percentage (e.g., 3% = 0.03)
-        // We use GS_VARIATION_THRESHOLD as percentage points (e.g., 5 means 5%)
-        bool variation_substantial = true;
-        if (min_gain < 0) {
-            // When min is negative, check if max is substantially better
-            // max_gain >= (1 + threshold%) * min_gain
-            // Since min is negative, multiplying by (1+x) makes it more negative
-            // So we want max_gain to be significantly larger than this more negative value
-            variation_substantial = (max_gain * 100 >= (100 + GS_VARIATION_THRESHOLD) * min_gain);
-        } else {
-            // When min is non-negative, check the relative improvement
-            variation_substantial = (max_gain * 100 >= (100 + GS_VARIATION_THRESHOLD) * min_gain);
-        }
+        int threshold = is_aligned ? GS_ALIGNED_VARIATION_THRESHOLD : GS_VARIATION_THRESHOLD;
+        bool variation_substantial = (max_gain * 100 >= (100 + threshold) * min_gain);
 
-        // Only update if variation is substantial and there's actual improvement
-        if (variation_substantial && best_idx != curr_idx && max_gain > 0) {
-            state.curr_timeout_idx = best_idx;
-            simple_stats_.Increment("gs_timeout_switches");
+        if (is_aligned) {
+            // Paper Section 4.1: nextT = argmax(gain), revert if variation not substantial
+            if (variation_substantial && best_idx != curr_idx) {
+                state.curr_timeout_idx = best_idx;
+                simple_stats_.Increment("gs_timeout_switches");
+            }
+        } else {
+            // Original GS: additional max_gain > 0 guard
+            if (variation_substantial && best_idx != curr_idx && max_gain > 0) {
+                state.curr_timeout_idx = best_idx;
+                simple_stats_.Increment("gs_timeout_switches");
+            }
         }
 
         // Record current timeout distribution

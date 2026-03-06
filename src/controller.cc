@@ -22,6 +22,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "DPM"         ? RowBufPolicy::DPM:
                       config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
                       config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
+                      config.row_buf_policy == "GS_ALIGNED"  ? RowBufPolicy::GS_ALIGNED:
                       config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
                       config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
                       config.row_buf_policy == "RL_PAGE"     ? RowBufPolicy::RL_PAGE:
@@ -39,6 +40,7 @@ Controller::Controller(int channel, const Config &config, const Timing &timing)
                       config.row_buf_policy == "DPM"         ? RowBufPolicy::DPM:
                       config.row_buf_policy == "GS"          ? RowBufPolicy::GS:
                       config.row_buf_policy == "GS_NOHOTROW" ? RowBufPolicy::GS_NOHOTROW:
+                      config.row_buf_policy == "GS_ALIGNED"  ? RowBufPolicy::GS_ALIGNED:
                       config.row_buf_policy == "DYMPL"       ? RowBufPolicy::DYMPL:
                       config.row_buf_policy == "FAPS"        ? RowBufPolicy::FAPS:
                       config.row_buf_policy == "RL_PAGE"     ? RowBufPolicy::RL_PAGE:
@@ -137,7 +139,7 @@ void Controller::ClockTick() {
             }
         }
     }
-    else if(row_buf_policy_==RowBufPolicy::GS || row_buf_policy_==RowBufPolicy::GS_NOHOTROW){ //GS policy timeout handling, can not issue timeout precharge when there is command issued
+    else if(row_buf_policy_==RowBufPolicy::GS || row_buf_policy_==RowBufPolicy::GS_NOHOTROW || row_buf_policy_==RowBufPolicy::GS_ALIGNED){ //GS policy timeout handling, can not issue timeout precharge when there is command issued
         //decrease timeout counter for each bank
         for(int i=0;i<cmd_queue_.num_queues_;i++){
             if(cmd_queue_.timeout_ticking[i] && cmd_queue_.timeout_counter[i]>0){
@@ -151,7 +153,7 @@ void Controller::ClockTick() {
                 //check sending precharge timing is ok
                 auto& bs=channel_state_.bank_states_[cmd.Rank()][cmd.Bankgroup()][cmd.Bank()];
                 if(bs.IsRowOpen() && bs.cmd_timing_[static_cast<int>(CommandType::PRECHARGE)]<=clk_){
-                    if (row_buf_policy_ == RowBufPolicy::GS) {
+                    if (row_buf_policy_ == RowBufPolicy::GS || row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
                         // Row Exclusion check: if row is in exclusion store, delay precharge
                         if (cmd_queue_.RE_IsInStore(cmd.Rank(), cmd.Bankgroup(), cmd.Bank(), cmd.Row())) {
                             // RE hit: count and track for verification
@@ -161,8 +163,14 @@ void Controller::ClockTick() {
                                 detect.pending_re_hit_check = true;
                                 detect.re_hit_row = cmd.Row();
                             }
-                            // Extend timeout, wait for next evaluation
-                            cmd_queue_.timeout_counter[i] = cmd_queue_.GetCurrentTimeout(i);
+                            if (row_buf_policy_ == RowBufPolicy::GS_ALIGNED) {
+                                // Paper Section 4.2: indefinite hold — row is only closed
+                                // when a request to another row in the same bank arrives
+                                cmd_queue_.timeout_ticking[i] = false;
+                            } else {
+                                // Original GS: extend timeout, re-evaluate later
+                                cmd_queue_.timeout_counter[i] = cmd_queue_.GetCurrentTimeout(i);
+                            }
                             continue;  // Skip precharge for now
                         }
 

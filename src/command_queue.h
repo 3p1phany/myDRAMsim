@@ -18,6 +18,8 @@ static constexpr int GS_TIMEOUT_COUNT = 7;
 static constexpr int GS_TIMEOUT_VALUES[GS_TIMEOUT_COUNT] = {50, 100, 150, 200, 300, 400, 800};
 static constexpr uint64_t GS_ARBITRATION_PERIOD = 30000;
 static constexpr int GS_VARIATION_THRESHOLD = 5;
+static constexpr int GS_ALIGNED_VARIATION_THRESHOLD = 3;  // Paper Table 2: 3%
+static constexpr int GS_ALIGNED_ARBITRATION_REQUESTS = 30000;  // Paper Table 2: 30000 requests
 
 // ===== FAPS-3D Constants =====
 static constexpr int FAPS_EPOCH_ACCESSES = 1000;
@@ -199,6 +201,7 @@ class CommandQueue {
 
     // ===== GS Timeout Update Members =====
     std::vector<GSShadowState> gs_shadow_state_;  // per bank
+    std::vector<int> gs_aligned_req_count_;  // per bank request counter for GS_ALIGNED
 
     // GS Timeout Update functions
     void GS_ProcessACT(int queue_idx, int new_row, uint64_t curr_cycle);
